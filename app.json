@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "NEPSE Analyzer",
+    "slug": "nepse-analyzer",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "nepseanalyzer",
+    "android": {
+      "package": "com.bibekjha.nepseanalyzer",
+      "versionCode": 1
+    },
+    "ios": {
+      "bundleIdentifier": "com.bibekjha.nepseanalyzer",
+      "supportsTablet": true
+    }
+  }
+}
