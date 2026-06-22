@@ -121,18 +121,22 @@ export async function loadAnalysis() {
 
   // NEPSE index from Chukul (symbol "NEPSE"); keep user's band; null -> shows "—"
   let index = { name: 'NEPSE Index', value: null, changePct: 0, ...indexBand };
+  let indexOk = false;
   try {
     const ic = await fetchCandles('NEPSE', cookie);
     if (ic.length) {
       const v = ic[ic.length - 1].c;
       index = { name: 'NEPSE Index', value: v, changePct: pctChange(ic, v) ?? 0, ...indexBand };
+      indexOk = true;
     }
   } catch (e) { /* leave null */ }
 
-  const live = stocks.some((s) => s.price != null);
+  const anyStockOk = stocks.some((s) => s.price != null);
+  const cookieWorks = indexOk || anyStockOk;
+  let error = '';
+  if (!cookieWorks) error = 'Chukul cookie may have expired — re-paste it in Settings or the Chart tab.';
+  else if (watchlist.length && !anyStockOk) error = 'Index loaded but watchlist prices are missing — try Pull to refresh.';
   return {
-    live,
-    error: live ? '' : 'No prices returned — your Chukul cookie may have expired (re-set it in the Chart tab).',
-    hasCookie: true, stocks, index, indexBand, watchlist,
+    live: cookieWorks, error, hasCookie: true, stocks, index, indexBand, watchlist,
   };
 }

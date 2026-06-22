@@ -46,7 +46,16 @@ export async function getWatchlist() {
     await AsyncStorage.setItem(KEY_WATCH, JSON.stringify(SEED_WATCHLIST));
     return SEED_WATCHLIST;
   }
-  try { return JSON.parse(v); } catch { return SEED_WATCHLIST; }
+  try {
+    const parsed = JSON.parse(v);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      await AsyncStorage.setItem(KEY_WATCH, JSON.stringify(SEED_WATCHLIST));
+      return SEED_WATCHLIST;
+    }
+    return parsed;
+  } catch {
+    return SEED_WATCHLIST;
+  }
 }
 export async function saveWatchlist(list) {
   await AsyncStorage.setItem(KEY_WATCH, JSON.stringify(list));

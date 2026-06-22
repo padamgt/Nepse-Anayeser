@@ -253,7 +253,7 @@ function BestPicks({ list, query, setQuery, onOpen, refreshing, onRefresh, error
       {!live && (
         <View style={styles.banner}>
           <Text style={styles.bannerTxt}>
-            Feed offline{error ? ` — ${error}` : ''}. Prices show “—”. Check the API URL in Settings.
+            {error || 'Chukul cookie may have expired.'} Prices show “—” until it’s refreshed in Settings.
           </Text>
         </View>
       )}
@@ -583,29 +583,37 @@ function FundRow({ label, value }) {
 function EditModal({ form, onClose, onSave }) {
   const [f, setF] = useState(form || {});
   const [list, setList] = useState([]);
-  const [q, setQ] = useState('');
+  const [listState, setListState] = useState('loading'); // loading | ok | fail | nocookie
+  const [showSug, setShowSug] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
-  useEffect(() => { setF(form || {}); setQ(''); setNote(''); }, [form]);
+  useEffect(() => { setF(form || {}); setShowSug(false); setNote(''); }, [form]);
   useEffect(() => {
+    if (!form) return;
     let on = true;
     (async () => {
+      setListState('loading');
       const ck = await getCookie();
-      if (!ck) return;
-      try { const l = await fetchStockList(ck); if (on) setList(l); } catch (e) { /* no list */ }
+      if (!ck) { if (on) setListState('nocookie'); return; }
+      try {
+        const l = await fetchStockList(ck);
+        if (on) { setList(l); setListState(l.length ? 'ok' : 'fail'); }
+      } catch (e) { if (on) setListState('fail'); }
     })();
     return () => { on = false; };
-  }, []);
+  }, [form]);
   if (!form) return null;
   const set = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
   const isNew = !form.symbol;
   const canSave = (f.symbol || '').trim() && Number(f.support) > 0 && Number(f.resistance) > Number(f.support);
 
-  const matches = q.trim()
-    ? list.filter((s) => s.symbol.toLowerCase().includes(q.toLowerCase()) || s.name.toLowerCase().includes(q.toLowerCase())).slice(0, 8)
+  const q = (f.symbol || '').trim().toLowerCase();
+  const matches = showSug && q
+    ? list.filter((s) => s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)).slice(0, 8)
     : [];
 
   const autofill = async (symbol) => {
+    if (!symbol) return;
     setBusy(true); setNote('Fetching candles…');
     try {
       const ck = await getCookie();
@@ -621,13 +629,13 @@ function EditModal({ form, onClose, onSave }) {
         setNote(`Auto-filled from ${candles.length} candles · price ${Math.round(a.price)}`);
       } else setNote('Not enough candle history to auto-fill.');
     } catch (e) {
-      setNote('Auto-fill needs a valid Chukul cookie (set it in the Chart tab).');
+      setNote('Auto-fill failed — set a valid Chukul cookie in Settings, or enter levels manually.');
     } finally { setBusy(false); }
   };
 
   const choose = (s) => {
     setF((p) => ({ ...p, symbol: s.symbol, name: s.name, sector: String(s.sector != null ? s.sector : p.sector || '') }));
-    setQ('');
+    setShowSug(false);
     autofill(s.symbol);
   };
 
@@ -640,32 +648,30 @@ function EditModal({ form, onClose, onSave }) {
             <TouchableOpacity onPress={onClose}><Text style={{ color: C.textDim, fontSize: 16 }}>✕</Text></TouchableOpacity>
           </View>
           <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 460 }}>
-            {isNew && list.length > 0 && (
-              <View style={{ marginBottom: 6 }}>
-                <Text style={styles.fieldLabel}>Search & pick a script</Text>
-                <TextInput style={styles.input} value={f.symbol ? `${f.symbol} — ${f.name || ''}` : q} onChangeText={(v) => { setF((p) => ({ ...p, symbol: '' })); setQ(v); }} autoCapitalize="characters" autoCorrect={false} placeholder="Type symbol or name…" placeholderTextColor={C.textFaint} />
-                {matches.map((s) => (
-                  <TouchableOpacity key={s.symbol} onPress={() => choose(s)} style={{ paddingVertical: 9, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: C.border }}>
-                    <Text style={{ color: C.text, fontWeight: '700' }}>{s.symbol} <Text style={{ color: C.textDim, fontWeight: '400', fontSize: 12 }}>· {s.name}</Text></Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-            {isNew && list.length === 0 && (
-              <View style={{ flexDirection: 'row' }}>
-                <Field label="Symbol *" value={f.symbol} onChange={set('symbol')} caps />
-                <View style={{ width: 12 }} />
-                <Field label="Sector" value={f.sector} onChange={set('sector')} />
-              </View>
-            )}
-            {!isNew && (
-              <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
-                <View style={{ flex: 1 }}><Field label="Symbol" value={f.symbol} onChange={set('symbol')} caps /></View>
-                <TouchableOpacity onPress={() => autofill(f.symbol)} style={[styles.addBtn, { marginLeft: 10, marginBottom: 10 }]}>
-                  <Text style={styles.addBtnTxt}>Auto-fill</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+            <Text style={styles.fieldLabel}>Symbol *</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <TextInput
+                style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                value={f.symbol || ''}
+                onChangeText={(v) => { setF((p) => ({ ...p, symbol: v.toUpperCase() })); setShowSug(true); }}
+                autoCapitalize="characters" autoCorrect={false}
+                placeholder="Type symbol e.g. RFPL" placeholderTextColor={C.textFaint}
+                editable={isNew}
+              />
+              <TouchableOpacity onPress={() => autofill((f.symbol || '').trim())} disabled={busy || !(f.symbol || '').trim()} style={[styles.addBtn, { marginLeft: 8, opacity: busy || !(f.symbol || '').trim() ? 0.5 : 1 }]}>
+                <Text style={styles.addBtnTxt}>{busy ? '…' : 'Auto-fill'}</Text>
+              </TouchableOpacity>
+            </View>
+            {listState === 'loading' && <Text style={[styles.hint, { marginTop: 6 }]}>Loading script list…</Text>}
+            {listState === 'fail' && <Text style={[styles.hint, { marginTop: 6 }]}>Couldn’t load the script list — type the exact symbol and tap Auto-fill.</Text>}
+            {listState === 'nocookie' && <Text style={[styles.hint, { marginTop: 6 }]}>Set your Chukul cookie in Settings to enable search &amp; auto-fill.</Text>}
+            {matches.map((s) => (
+              <TouchableOpacity key={s.symbol} onPress={() => choose(s)} style={{ paddingVertical: 9, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: C.border }}>
+                <Text style={{ color: C.text, fontWeight: '700' }}>{s.symbol} <Text style={{ color: C.textDim, fontWeight: '400', fontSize: 12 }}>· {s.name}</Text></Text>
+              </TouchableOpacity>
+            ))}
+            <View style={{ height: 10 }} />
+            <Field label="Sector" value={f.sector} onChange={set('sector')} />
 
             {busy && <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}><ActivityIndicator color={C.accent} size="small" /><Text style={[styles.hint, { marginLeft: 8, marginTop: 0 }]}>{note}</Text></View>}
             {!busy && note ? <Text style={[styles.hint, { marginTop: 0, marginBottom: 6 }]}>{note}</Text> : null}
