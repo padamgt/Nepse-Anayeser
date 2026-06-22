@@ -29,6 +29,7 @@ import {
   DEFAULT_API,
 } from './src/data';
 import { rankStocks, compositeScore, computeSignal, SIGNAL_META } from './src/signals';
+import ChartScreen from './src/chart';
 import { BandGauge, GaugeLabels, SignalBadge, ScoreBar, fmt } from './src/components';
 
 export default function App() {
@@ -176,6 +177,7 @@ export default function App() {
             <Market movers={movers} live={data.live} refreshing={refreshing} onRefresh={onRefresh} />
           )}
           {tab === 'settings' && <Settings data={data} onSaved={refresh} />}
+          {tab === 'chart' && <ChartScreen />}
           <TabBar tab={tab} setTab={setTab} watchCount={ranked.length} />
         </>
       )}
@@ -656,7 +658,7 @@ function TabBar({ tab, setTab, watchCount }) {
     <View style={styles.tabBar}>
       <TabButton active={tab === 'picks'} label="Picks" onPress={() => setTab('picks')} />
       <TabButton active={tab === 'watch'} label={`Watch (${watchCount})`} onPress={() => setTab('watch')} />
-      <TabButton active={tab === 'market'} label="Market" onPress={() => setTab('market')} />
+      <TabButton active={tab === 'chart'} label="Chart" onPress={() => setTab('chart')} />
       <TabButton active={tab === 'settings'} label="Settings" onPress={() => setTab('settings')} />
     </View>
   );
