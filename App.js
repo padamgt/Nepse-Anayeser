@@ -30,6 +30,8 @@ import {
 } from './src/data';
 import { rankStocks, compositeScore, computeSignal, SIGNAL_META } from './src/signals';
 import ChartScreen from './src/chart';
+import { getCookie, setCookie, fetchStockList, fetchCandles, loadAnalysis } from './src/chukul';
+import { analyze } from './src/analysis';
 import { BandGauge, GaugeLabels, SignalBadge, ScoreBar, fmt } from './src/components';
 
 export default function App() {
@@ -43,9 +45,8 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
 
   const refresh = useCallback(async () => {
-    const d = await loadData();
+    const d = await loadAnalysis();
     setData(d);
-    if (d.live) fetchMovers(d.api).then(setMovers).catch(() => {});
     return d;
   }, []);
 
@@ -432,19 +433,21 @@ function MoverRow({ m, positive }) {
 
 // ---- Settings ---------------------------------------------------------------
 function Settings({ data, onSaved }) {
-  const [url, setUrl] = useState(data.api);
+  const [ck, setCk] = useState('');
   const [sup, setSup] = useState(String(data.indexBand.support));
   const [res, setRes] = useState(String(data.indexBand.resistance));
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => { getCookie().then((c) => setCk(c || '')); }, []);
+
   const test = async () => {
     setBusy(true);
     setStatus('Testing…');
     try {
-      await setApiUrl(url);
-      await pingApi(url.trim().replace(/\/+$/, ''));
-      setStatus('✓ Connected — health check passed.');
+      await setCookie(ck);
+      const c = await fetchCandles('NABIL', ck.trim());
+      setStatus(c.length ? `✓ Connected — ${c.length} candles for NABIL.` : '✗ No data — cookie may be invalid/expired.');
     } catch (e) {
       setStatus('✗ ' + String(e.message || e));
     } finally {
@@ -453,7 +456,7 @@ function Settings({ data, onSaved }) {
   };
 
   const save = async () => {
-    await setApiUrl(url);
+    await setCookie(ck);
     await saveIndexBand({ support: Number(sup) || 0, resistance: Number(res) || 0 });
     await onSaved();
     setStatus('Saved.');
@@ -464,11 +467,11 @@ function Settings({ data, onSaved }) {
       <Text style={styles.sectionTitle}>Settings</Text>
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>NEPSE API endpoint</Text>
-        <TextInput style={styles.input} value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} placeholder={DEFAULT_API} placeholderTextColor={C.textFaint} />
+        <Text style={styles.cardTitle}>Chukul session cookie</Text>
+        <TextInput style={styles.input} value={ck} onChangeText={setCk} autoCapitalize="none" autoCorrect={false} placeholder="paste chk-session value" placeholderTextColor={C.textFaint} />
         <Text style={styles.hint}>
-          Base URL only (the app adds the rest). Default: {DEFAULT_API} — the app queries
-          /api?symbol= for each stock in your watchlist. If the feed is down, set a Manual price per stock when you edit it.
+          Powers prices, levels and the chart. On chukul.com (logged in): DevTools → Application → Cookies → copy chk-session.
+          Stored only on this device. It expires periodically — re-paste when prices stop loading.
         </Text>
         <View style={{ flexDirection: 'row', marginTop: 12 }}>
           <TouchableOpacity style={[styles.primaryBtn, { flex: 1, marginRight: 8, opacity: busy ? 0.6 : 1 }]} onPress={test} disabled={busy}>
@@ -492,8 +495,8 @@ function Settings({ data, onSaved }) {
       </View>
 
       <Text style={styles.disclaimer}>
-        Data via the unofficial NepseAPI (educational / personal use only). Prices may be delayed or wrong. This is
-        analysis tooling, not investment advice — verify against official NEPSE and company disclosures before trading.
+        Personal use. Data via Chukul's logged-in API with your own session — keep this build private. Prices may be
+        delayed or wrong. Analysis tooling, not investment advice — verify against official NEPSE before trading.
       </Text>
     </ScrollView>
   );
@@ -579,25 +582,94 @@ function FundRow({ label, value }) {
 // ---- Edit / Add modal -------------------------------------------------------
 function EditModal({ form, onClose, onSave }) {
   const [f, setF] = useState(form || {});
-  useEffect(() => setF(form || {}), [form]);
+  const [list, setList] = useState([]);
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  useEffect(() => { setF(form || {}); setQ(''); setNote(''); }, [form]);
+  useEffect(() => {
+    let on = true;
+    (async () => {
+      const ck = await getCookie();
+      if (!ck) return;
+      try { const l = await fetchStockList(ck); if (on) setList(l); } catch (e) { /* no list */ }
+    })();
+    return () => { on = false; };
+  }, []);
   if (!form) return null;
   const set = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
+  const isNew = !form.symbol;
   const canSave = (f.symbol || '').trim() && Number(f.support) > 0 && Number(f.resistance) > Number(f.support);
+
+  const matches = q.trim()
+    ? list.filter((s) => s.symbol.toLowerCase().includes(q.toLowerCase()) || s.name.toLowerCase().includes(q.toLowerCase())).slice(0, 8)
+    : [];
+
+  const autofill = async (symbol) => {
+    setBusy(true); setNote('Fetching candles…');
+    try {
+      const ck = await getCookie();
+      const candles = await fetchCandles(symbol, ck);
+      const a = analyze(candles);
+      if (a) {
+        setF((p) => ({
+          ...p,
+          support: String(Math.round(a.support)),
+          resistance: String(Math.round(a.resistance)),
+          manualPrice: String(Math.round(a.price)),
+        }));
+        setNote(`Auto-filled from ${candles.length} candles · price ${Math.round(a.price)}`);
+      } else setNote('Not enough candle history to auto-fill.');
+    } catch (e) {
+      setNote('Auto-fill needs a valid Chukul cookie (set it in the Chart tab).');
+    } finally { setBusy(false); }
+  };
+
+  const choose = (s) => {
+    setF((p) => ({ ...p, symbol: s.symbol, name: s.name, sector: String(s.sector != null ? s.sector : p.sector || '') }));
+    setQ('');
+    autofill(s.symbol);
+  };
 
   return (
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'flex-end' }}>
         <View style={styles.sheet}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-            <Text style={styles.sheetTitle}>{form.symbol ? `Edit ${form.symbol}` : 'Add holding'}</Text>
+            <Text style={styles.sheetTitle}>{form.symbol ? `Edit ${form.symbol}` : 'Add to watchlist'}</Text>
             <TouchableOpacity onPress={onClose}><Text style={{ color: C.textDim, fontSize: 16 }}>✕</Text></TouchableOpacity>
           </View>
-          <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 440 }}>
-            <View style={{ flexDirection: 'row' }}>
-              <Field label="Symbol *" value={f.symbol} onChange={set('symbol')} caps />
-              <View style={{ width: 12 }} />
-              <Field label="Sector" value={f.sector} onChange={set('sector')} />
-            </View>
+          <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 460 }}>
+            {isNew && list.length > 0 && (
+              <View style={{ marginBottom: 6 }}>
+                <Text style={styles.fieldLabel}>Search & pick a script</Text>
+                <TextInput style={styles.input} value={f.symbol ? `${f.symbol} — ${f.name || ''}` : q} onChangeText={(v) => { setF((p) => ({ ...p, symbol: '' })); setQ(v); }} autoCapitalize="characters" autoCorrect={false} placeholder="Type symbol or name…" placeholderTextColor={C.textFaint} />
+                {matches.map((s) => (
+                  <TouchableOpacity key={s.symbol} onPress={() => choose(s)} style={{ paddingVertical: 9, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: C.border }}>
+                    <Text style={{ color: C.text, fontWeight: '700' }}>{s.symbol} <Text style={{ color: C.textDim, fontWeight: '400', fontSize: 12 }}>· {s.name}</Text></Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+            {isNew && list.length === 0 && (
+              <View style={{ flexDirection: 'row' }}>
+                <Field label="Symbol *" value={f.symbol} onChange={set('symbol')} caps />
+                <View style={{ width: 12 }} />
+                <Field label="Sector" value={f.sector} onChange={set('sector')} />
+              </View>
+            )}
+            {!isNew && (
+              <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
+                <View style={{ flex: 1 }}><Field label="Symbol" value={f.symbol} onChange={set('symbol')} caps /></View>
+                <TouchableOpacity onPress={() => autofill(f.symbol)} style={[styles.addBtn, { marginLeft: 10, marginBottom: 10 }]}>
+                  <Text style={styles.addBtnTxt}>Auto-fill</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {busy && <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}><ActivityIndicator color={C.accent} size="small" /><Text style={[styles.hint, { marginLeft: 8, marginTop: 0 }]}>{note}</Text></View>}
+            {!busy && note ? <Text style={[styles.hint, { marginTop: 0, marginBottom: 6 }]}>{note}</Text> : null}
+
             <Field label="Company name" value={f.name} onChange={set('name')} />
             <View style={{ flexDirection: 'row' }}>
               <Field label="Support *" value={f.support} onChange={set('support')} numeric />
@@ -628,7 +700,7 @@ function EditModal({ form, onClose, onSave }) {
           >
             <Text style={styles.primaryBtnTxt}>{form.symbol ? 'Save changes' : 'Add to watchlist'}</Text>
           </TouchableOpacity>
-          {!canSave && <Text style={[styles.hint, { textAlign: 'center' }]}>Symbol, support and resistance (resistance &gt; support) are required.</Text>}
+          {!canSave && <Text style={[styles.hint, { textAlign: 'center' }]}>Pick a symbol; support &amp; resistance are required (resistance &gt; support).</Text>}
         </View>
       </KeyboardAvoidingView>
     </Modal>

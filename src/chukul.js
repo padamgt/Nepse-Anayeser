@@ -1,10 +1,16 @@
 // Chukul (login-gated) data client — personal use. Sends your chk-session
 // cookie (stored on-device) as a Cookie header. RN has no CORS, so this works.
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getWatchlist, getIndexBand } from './data';
+import { analyze } from './analysis';
 
 const KEY_COOKIE = 'chukul.session';
 export const STOCK_LIST_URL = 'https://chukul.com/api/stock/';
 export const CANDLE_BASE = 'https://live.chukul.com/api/data/adjhistorydata/data/';
+
+// How many recent daily candles to analyse. Keeps S/R, targets and the chart
+// anchored to CURRENT structure instead of years of history.
+export const WINDOW = 120;
 
 export async function getCookie() {
   return (await AsyncStorage.getItem(KEY_COOKIE)) || '';
@@ -49,9 +55,84 @@ export async function fetchCandles(symbol, cookie) {
   const src = d && d.o ? d : d && d.data && d.data.o ? d.data : d || {};
   const o = src.o || [], h = src.h || [], l = src.l || [], c = src.c || [], t = src.t || [], vol = src.vol || src.v || [];
   const n = Math.min(o.length, h.length, l.length, c.length);
-  const out = [];
+
+  let rows = [];
   for (let i = 0; i < n; i++) {
-    out.push({ i, o: +o[i], h: +h[i], l: +l[i], c: +c[i], v: +(vol[i] || 0), t: +(t[i] || 0) });
+    rows.push({ o: +o[i], h: +h[i], l: +l[i], c: +c[i], v: +(vol[i] || 0), t: +(t[i] || 0) });
   }
-  return out;
+
+  // Ensure chronological order (oldest -> newest) using timestamps when present,
+  // so the LAST element is the most recent candle (= current price).
+  const haveT = rows.every((r) => r.t > 0);
+  if (haveT) rows.sort((a, b) => a.t - b.t);
+
+  // Keep only the most recent WINDOW candles so analysis reflects current structure.
+  rows = rows.slice(-WINDOW);
+
+  // Re-index for the chart.
+  return rows.map((r, i) => ({ i, ...r }));
+}
+
+// Unified loader — drives Picks/Watch/index from real Chukul candle analysis.
+// Falls back to stored bands + manual prices when no cookie is set.
+function pctChange(candles, price) {
+  if (!candles || candles.length < 2 || price == null) return null;
+  const prev = candles[candles.length - 2].c;
+  return prev ? ((price - prev) / prev) * 100 : null;
+}
+
+export async function loadAnalysis() {
+  const cookie = await getCookie();
+  const [watchlist, indexBand] = await Promise.all([getWatchlist(), getIndexBand()]);
+
+  if (!cookie) {
+    const stocks = watchlist.map((w) => ({
+      ...w,
+      price: w.manualPrice ? Number(w.manualPrice) : null,
+      support: w.support, resistance: w.resistance,
+      watchlist: w.alert, percentChange: null,
+    }));
+    return {
+      live: false,
+      error: 'Set your Chukul cookie in the Chart tab to load live prices and real levels.',
+      hasCookie: false, stocks, indexBand, watchlist,
+      index: { name: 'NEPSE Index', value: null, changePct: 0, ...indexBand },
+    };
+  }
+
+  const stocks = [];
+  for (const w of watchlist) {
+    try {
+      const candles = await fetchCandles(w.symbol, cookie);
+      const a = analyze(candles);
+      if (a) {
+        stocks.push({
+          ...w, price: a.price, support: a.support, resistance: a.resistance,
+          watchlist: w.alert, percentChange: pctChange(candles, a.price), analysis: a,
+        });
+      } else {
+        const lp = candles.length ? candles[candles.length - 1].c : (w.manualPrice ? Number(w.manualPrice) : null);
+        stocks.push({ ...w, price: lp, support: w.support, resistance: w.resistance, watchlist: w.alert, percentChange: pctChange(candles, lp) });
+      }
+    } catch (e) {
+      stocks.push({ ...w, price: w.manualPrice ? Number(w.manualPrice) : null, support: w.support, resistance: w.resistance, watchlist: w.alert, percentChange: null });
+    }
+  }
+
+  // NEPSE index from Chukul (symbol "NEPSE"); keep user's band; null -> shows "—"
+  let index = { name: 'NEPSE Index', value: null, changePct: 0, ...indexBand };
+  try {
+    const ic = await fetchCandles('NEPSE', cookie);
+    if (ic.length) {
+      const v = ic[ic.length - 1].c;
+      index = { name: 'NEPSE Index', value: v, changePct: pctChange(ic, v) ?? 0, ...indexBand };
+    }
+  } catch (e) { /* leave null */ }
+
+  const live = stocks.some((s) => s.price != null);
+  return {
+    live,
+    error: live ? '' : 'No prices returned — your Chukul cookie may have expired (re-set it in the Chart tab).',
+    hasCookie: true, stocks, index, indexBand, watchlist,
+  };
 }

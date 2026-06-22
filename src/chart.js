@@ -7,6 +7,7 @@ import Svg, { Rect, Line, Path, G, Text as SvgText } from 'react-native-svg';
 import { C } from './theme';
 import { analyze } from './analysis';
 import { getCookie, setCookie, fetchStockList, fetchCandles } from './chukul';
+import { getWatchlist } from './data';
 
 const fmt = (n) => (n == null || isNaN(n) ? '—' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: 1 }));
 const SIGNAL_COLOR = { BREAKOUT: C.good, ACCUMULATE: '#2E9E6B', HOLD: C.gold, TRIM: '#E5A23A', BREAKDOWN: C.bad };
@@ -105,6 +106,7 @@ export default function ChartScreen() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [show, setShow] = useState({ ema: true, smc: true, tgt: true });
+  const [scan, setScan] = useState({ loading: false, results: null, err: '' });
 
   useEffect(() => { getCookie().then((c) => { setCk(c); setCookieInput(c); }); }, []);
 
@@ -134,6 +136,30 @@ export default function ChartScreen() {
   };
 
   const A = useMemo(() => (data ? analyze(data) : null), [data]);
+
+  const scanWatch = useCallback(async () => {
+    setScan({ loading: true, results: null, err: '' });
+    try {
+      const wl = await getWatchlist();
+      const out = [];
+      for (const w of wl) {
+        try {
+          const candles = await fetchCandles(w.symbol, cookie);
+          if (candles.length >= 20) {
+            const a = analyze(candles);
+            if (a) out.push({ symbol: w.symbol, a });
+          }
+        } catch (e) { /* skip this symbol */ }
+      }
+      const acc = out
+        .filter((x) => x.a.signal === 'ACCUMULATE')
+        .sort((p, q) => q.a.rr - p.a.rr)
+        .slice(0, 5);
+      setScan({ loading: false, results: acc, err: out.length ? '' : 'No candle data — check the cookie.' });
+    } catch (e) {
+      setScan({ loading: false, results: null, err: String(e.message || e) });
+    }
+  }, [cookie]);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
@@ -178,6 +204,32 @@ export default function ChartScreen() {
           <Text style={styles.pickName} numberOfLines={1}>{s.name}</Text>
         </TouchableOpacity>
       ))}
+
+      {query.trim() === '' && (
+        <View style={styles.card}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={styles.cardTitle}>Watchlist · Accumulate setups</Text>
+            <TouchableOpacity onPress={scanWatch} disabled={scan.loading} style={[styles.scanBtn, { opacity: scan.loading ? 0.6 : 1 }]}>
+              <Text style={styles.scanBtnTxt}>{scan.loading ? 'Scanning…' : 'Scan'}</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.hint}>Runs every watchlist stock through the candle engine and lists the ones in an Accumulate zone, with auto Entry / S1 / S2 / SL / T1 / T2. Tap one to open its chart.</Text>
+          {scan.loading && <ActivityIndicator color={C.accent} style={{ marginTop: 10 }} />}
+          {scan.err ? <Text style={styles.errTxt}>{scan.err}</Text> : null}
+          {scan.results && scan.results.length === 0 && <Text style={styles.hint}>No watchlist stocks are in an Accumulate zone right now.</Text>}
+          {scan.results && scan.results.map(({ symbol, a }) => (
+            <TouchableOpacity key={symbol} style={styles.setup} onPress={() => pick(symbol)}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={styles.pickSym}>{symbol}</Text>
+                <Text style={{ color: '#2E9E6B', fontWeight: '800', fontSize: 12 }}>ACCUMULATE · R:R 1:{a.rr.toFixed(1)}</Text>
+              </View>
+              <Text style={styles.setupLine}><Text style={{ color: C.gold, fontWeight: '800' }}>Entry</Text> {fmt(a.entry)}   <Text style={{ color: C.bad, fontWeight: '800' }}>SL</Text> {fmt(a.stop)}</Text>
+              <Text style={styles.setupLine}>S1 {fmt(a.S1)}   S2 {fmt(a.S2)}</Text>
+              <Text style={styles.setupLine}><Text style={{ color: C.good, fontWeight: '800' }}>T1</Text> {fmt(a.t1)} (+{(((a.t1 - a.entry) / a.entry) * 100).toFixed(1)}%)   <Text style={{ color: '#13855F', fontWeight: '800' }}>T2</Text> {fmt(a.t2)} (+{(((a.t2 - a.entry) / a.entry) * 100).toFixed(1)}%)</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
 
       {loading && <View style={{ paddingVertical: 30 }}><ActivityIndicator color={C.accent} /></View>}
       {err ? <Text style={styles.errTxt}>{err}</Text> : null}
@@ -267,4 +319,8 @@ const styles = StyleSheet.create({
   statV: { fontSize: 14, fontWeight: '800', marginTop: 3 },
   lvl: { color: C.text, fontSize: 13, marginTop: 4 },
   disc: { color: C.textFaint, fontSize: 11, lineHeight: 16, marginTop: 16, fontStyle: 'italic' },
+  scanBtn: { backgroundColor: C.accent, borderRadius: 999, paddingHorizontal: 16, paddingVertical: 6 },
+  scanBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 12 },
+  setup: { backgroundColor: C.bg, borderWidth: 1, borderColor: C.border, borderRadius: 10, padding: 11, marginTop: 8 },
+  setupLine: { color: C.text, fontSize: 12.5, marginTop: 3 },
 });
