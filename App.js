@@ -100,6 +100,7 @@ export default function App() {
           above: Number(h.resistance) || undefined,
           below: Number(h.support) || undefined,
         },
+        manualPrice: h.manualPrice != null && h.manualPrice !== '' ? String(h.manualPrice) : '',
       };
       if (i >= 0) list[i] = entry;
       else list.push(entry);
@@ -184,7 +185,7 @@ export default function App() {
   );
 }
 
-const blankForm = () => ({ symbol: '', name: '', sector: '', support: '', resistance: '', cost: '', eps: '', pe: '', pb: '', roe: '' });
+const blankForm = () => ({ symbol: '', name: '', sector: '', support: '', resistance: '', cost: '', manualPrice: '', eps: '', pe: '', pb: '', roe: '' });
 const toForm = (s) => ({
   symbol: s.symbol,
   name: s.name,
@@ -192,6 +193,7 @@ const toForm = (s) => ({
   support: String(s.support ?? ''),
   resistance: String(s.resistance ?? ''),
   cost: s.watchlist && s.watchlist.cost ? String(s.watchlist.cost) : '',
+  manualPrice: s.manualPrice != null ? String(s.manualPrice) : '',
   eps: s.fundamentals ? String(s.fundamentals.eps ?? '') : '',
   pe: s.fundamentals ? String(s.fundamentals.pe ?? '') : '',
   pb: s.fundamentals ? String(s.fundamentals.pb ?? '') : '',
@@ -463,8 +465,8 @@ function Settings({ data, onSaved }) {
         <Text style={styles.cardTitle}>NEPSE API endpoint</Text>
         <TextInput style={styles.input} value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} placeholder={DEFAULT_API} placeholderTextColor={C.textFaint} />
         <Text style={styles.hint}>
-          Hosted (free, rate-limited, no uptime guarantee): {DEFAULT_API}. For reliability, self-host the FastAPI server
-          and use your LAN address, e.g. http://192.168.1.50:8000.
+          Base URL only (the app adds the rest). Default: {DEFAULT_API} — the app queries
+          /api?symbol= for each stock in your watchlist. If the feed is down, set a Manual price per stock when you edit it.
         </Text>
         <View style={{ flexDirection: 'row', marginTop: 12 }}>
           <TouchableOpacity style={[styles.primaryBtn, { flex: 1, marginRight: 8, opacity: busy ? 0.6 : 1 }]} onPress={test} disabled={busy}>
@@ -600,7 +602,11 @@ function EditModal({ form, onClose, onSave }) {
               <View style={{ width: 12 }} />
               <Field label="Resistance *" value={f.resistance} onChange={set('resistance')} numeric />
             </View>
-            <Field label="Buy / cost price (optional)" value={f.cost} onChange={set('cost')} numeric />
+            <View style={{ flexDirection: 'row' }}>
+              <Field label="Buy / cost price (optional)" value={f.cost} onChange={set('cost')} numeric />
+              <View style={{ width: 12 }} />
+              <Field label="Manual price (if feed down)" value={f.manualPrice} onChange={set('manualPrice')} numeric />
+            </View>
             <Text style={[styles.cardTitle, { marginTop: 8 }]}>Accounting (optional)</Text>
             <View style={{ flexDirection: 'row' }}>
               <Field label="EPS" value={f.eps} onChange={set('eps')} numeric />

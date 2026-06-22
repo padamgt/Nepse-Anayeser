@@ -1,18 +1,16 @@
 // ============================================================================
-//  DATA LAYER  —  live NEPSE feed (surajrimal07/NepseAPI-Unofficial)
+//  DATA LAYER  —  ShareBazaar NEPSE feed (per-symbol)
+//  https://nepsetty.kokomo.workers.dev/api?symbol=SYMBOL
 //
-//  The feed gives LIVE PRICES. Support/resistance bands and the accounting
-//  figures (EPS/PE/PB/ROE) are NOT in the feed, so they live in your own
-//  watchlist (editable in-app, persisted on the device). Live price is merged
-//  onto each watchlist entry to compute the signal and scores.
-//
-//  Educational / personal use only — see the repo's licence.
+//  ShareBazaar returns ONE stock per request, so for your watchlist we query
+//  each symbol and combine the results. Support/resistance bands and the
+//  accounting figures (EPS/PE/PB/ROE) live in your own watchlist (editable,
+//  stored on the device). You can also set a manual price per stock, used as a
+//  fallback when the feed has no live data (e.g. market closed / server down).
 // ============================================================================
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Hosted instance (free, rate-limited, no uptime guarantee). For reliability,
-// self-host the FastAPI server and set this to e.g. http://192.168.1.50:8000
-export const DEFAULT_API = 'https://nepseapi.surajrimal.dev';
+export const DEFAULT_API = 'https://nepsetty.kokomo.workers.dev';
 
 const KEY_API = 'nepse.apiUrl';
 const KEY_WATCH = 'nepse.watchlist.v1';
@@ -21,15 +19,15 @@ const KEY_INDEX = 'nepse.indexBand.v1';
 // ---- First-run seed (your tracked names + bands; everything is editable) ----
 export const SEED_WATCHLIST = [
   { symbol: 'RFPL', name: 'Reliance Finance', sector: 'Finance', support: 837, resistance: 910,
-    fundamentals: { eps: 41, pe: 21.2, pb: 2.1, roe: 16.5 }, alert: { cost: 838, above: 910, below: 837 } },
+    fundamentals: { eps: 41, pe: 21.2, pb: 2.1, roe: 16.5 }, alert: { cost: 838, above: 910, below: 837 }, manualPrice: '' },
   { symbol: 'MMKJL', name: 'Mailung Khola Jal Vidhyut', sector: 'Hydropower', support: 630, resistance: 660,
-    fundamentals: { eps: 28, pe: 23.0, pb: 1.8, roe: 13.0 }, alert: { above: 660, below: 630 } },
+    fundamentals: { eps: 28, pe: 23.0, pb: 1.8, roe: 13.0 }, alert: { above: 660, below: 630 }, manualPrice: '' },
   { symbol: 'HRL', name: 'Himalayan Reinsurance', sector: 'Reinsurance', support: 680, resistance: 760,
-    fundamentals: { eps: 19, pe: 37.5, pb: 3.2, roe: 9.1 }, alert: { above: 760, below: 680 } },
+    fundamentals: { eps: 19, pe: 37.5, pb: 3.2, roe: 9.1 }, alert: { above: 760, below: 680 }, manualPrice: '' },
   { symbol: 'SAHAS', name: 'Sahas Urja', sector: 'Hydropower', support: 500, resistance: 560,
-    fundamentals: { eps: 31, pe: 17.4, pb: 1.9, roe: 17.1 }, alert: { above: 560, below: 500 } },
+    fundamentals: { eps: 31, pe: 17.4, pb: 1.9, roe: 17.1 }, alert: { above: 560, below: 500 }, manualPrice: '' },
   { symbol: 'NABIL', name: 'Nabil Bank', sector: 'Commercial Bank', support: 498, resistance: 545,
-    fundamentals: { eps: 33, pe: 15.5, pb: 1.6, roe: 18.2 }, alert: {} },
+    fundamentals: { eps: 33, pe: 15.5, pb: 1.6, roe: 18.2 }, alert: {}, manualPrice: '' },
 ];
 
 export const SEED_INDEX_BAND = { support: 2640, resistance: 2700 };
@@ -68,7 +66,6 @@ async function getJSON(url, ms = 12000) {
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(url, { signal: ctrl.signal, headers: { Accept: 'application/json' } });
-    if (res.status === 429) throw new Error('Rate limited (429) — wait a minute and retry.');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } finally {
@@ -76,102 +73,96 @@ async function getJSON(url, ms = 12000) {
   }
 }
 
-// The feed returns slightly different shapes across versions/endpoints, so pull
-// each field from a list of likely keys.
 const pick = (o, keys) => {
-  for (const k of keys) if (o[k] != null && o[k] !== '') return o[k];
+  for (const k of keys) {
+    if (o && o[k] != null && o[k] !== '') return o[k];
+    // case-insensitive fallback
+    if (o) {
+      const hit = Object.keys(o).find((kk) => kk.toLowerCase() === k.toLowerCase());
+      if (hit && o[hit] != null && o[hit] !== '') return o[hit];
+    }
+  }
   return undefined;
 };
 const num = (v) => {
   if (v == null) return null;
-  const n = Number(String(v).replace(/,/g, ''));
+  const n = Number(String(v).replace(/,/g, '').replace(/%/g, '').trim());
   return isNaN(n) ? null : n;
 };
 
-function normalizeQuote(raw) {
-  const symbol = pick(raw, ['symbol', 'Symbol', 'scrip', 'ticker', 'stockSymbol']);
-  if (!symbol) return null;
+const base = (api) => (api || DEFAULT_API).trim().replace(/\/+$/, '');
+
+// ShareBazaar returns a single object (sometimes wrapped). Pull fields tolerantly.
+function normalizeShareBazaar(raw, symbol) {
+  let o = raw;
+  if (o && typeof o === 'object' && !Array.isArray(o)) {
+    if (o.data && typeof o.data === 'object') o = o.data;
+    else if (o.result && typeof o.result === 'object') o = o.result;
+  }
+  if (Array.isArray(o)) o = o[0] || {};
   return {
     symbol: String(symbol).toUpperCase(),
-    ltp: num(pick(raw, ['ltp', 'lastTradedPrice', 'lastUpdatedPrice', 'closePrice', 'close', 'price', 'lastPrice'])),
-    open: num(pick(raw, ['open', 'openPrice'])),
-    high: num(pick(raw, ['high', 'highPrice', 'dayHigh'])),
-    low: num(pick(raw, ['low', 'lowPrice', 'dayLow'])),
-    prevClose: num(pick(raw, ['previousClose', 'previousDayClose', 'preClose', 'pclose'])),
-    percentChange: num(pick(raw, ['percentChange', 'perChange', 'pchange', 'changePercent', 'pointChangePercent'])),
-    volume: num(pick(raw, ['volume', 'totalTradeQuantity', 'shareTraded', 'qty'])),
+    ltp: num(pick(o, ['ltp', 'lastTradedPrice', 'lastPrice', 'currentPrice', 'price', 'close', 'closePrice', 'lastUpdatedPrice'])),
+    percentChange: num(pick(o, ['percentChange', 'changePercent', 'perChange', 'pChange', 'changePercentage', 'percentageChange', 'change_percent'])),
+    change: num(pick(o, ['change', 'pointChange', 'priceChange', 'changeInPrice'])),
+    volume: num(pick(o, ['volume', 'totalTradedQuantity', 'totalTradeQuantity', 'qty', 'shareTraded'])),
   };
 }
 
-function arrFrom(data) {
-  if (Array.isArray(data)) return data;
-  if (!data || typeof data !== 'object') return [];
-  // common containers: {data:[...]}, {LiveMarket:[...]}, etc.
-  for (const k of ['data', 'LiveMarket', 'PriceVolume', 'content', 'result', 'records']) {
-    if (Array.isArray(data[k])) return data[k];
-  }
-  // object keyed by symbol -> wrap values
-  const vals = Object.values(data);
-  if (vals.length && typeof vals[0] === 'object') return vals;
-  return [];
-}
-
 // ---- Public fetchers --------------------------------------------------------
-export async function fetchQuoteMap(api) {
-  // Try LiveMarket first, fall back to PriceVolume.
-  let list = [];
-  try { list = arrFrom(await getJSON(`${api}/LiveMarket`)); } catch (e) {
-    list = arrFrom(await getJSON(`${api}/PriceVolume`));
-  }
+// Query ShareBazaar once per watchlist symbol and build a {SYMBOL: quote} map.
+export async function fetchQuoteMap(api, symbols) {
+  const b = base(api);
   const map = {};
-  for (const r of list) {
-    const q = normalizeQuote(r);
-    if (q && q.ltp != null) map[q.symbol] = q;
-  }
+  await Promise.all(
+    (symbols || []).map(async (sym) => {
+      try {
+        const data = await getJSON(`${b}/api?symbol=${encodeURIComponent(sym)}`);
+        const q = normalizeShareBazaar(data, sym);
+        if (q.ltp != null) map[q.symbol] = q;
+      } catch (e) {
+        /* skip symbols that fail; manual price (if set) still shows */
+      }
+    })
+  );
   return map;
 }
 
 export async function fetchIndex(api, band) {
-  const b = band || SEED_INDEX_BAND;
+  const bnd = band || SEED_INDEX_BAND;
   try {
-    const data = await getJSON(`${api}/NepseIndex`);
-    // NepseIndex may be an object or an array of indices; find the NEPSE one.
-    let node = data;
-    if (Array.isArray(data)) {
-      node = data.find((x) => /nepse/i.test(JSON.stringify(x.index || x.name || ''))) || data[0];
-    } else if (data && data.NEPSE) {
-      node = data.NEPSE;
-    }
-    const value = num(pick(node || {}, ['currentValue', 'value', 'index', 'close', 'ltp', 'indexValue']));
-    const changePct = num(pick(node || {}, ['percentChange', 'perChange', 'changePercent', 'pchange'])) ?? 0;
-    return { name: 'NEPSE Index', value, changePct, support: b.support, resistance: b.resistance };
+    const data = await getJSON(`${base(api)}/api?symbol=NEPSE`);
+    const q = normalizeShareBazaar(data, 'NEPSE');
+    return { name: 'NEPSE Index', value: q.ltp, changePct: q.percentChange ?? 0, support: bnd.support, resistance: bnd.resistance };
   } catch (e) {
-    return { name: 'NEPSE Index', value: null, changePct: 0, support: b.support, resistance: b.resistance, error: String(e.message || e) };
+    return { name: 'NEPSE Index', value: null, changePct: 0, support: bnd.support, resistance: bnd.resistance };
   }
 }
 
-export async function fetchMovers(api) {
-  const out = { gainers: [], losers: [] };
-  try { out.gainers = arrFrom(await getJSON(`${api}/TopGainers`)).map(normalizeQuote).filter(Boolean).slice(0, 12); } catch {}
-  try { out.losers = arrFrom(await getJSON(`${api}/TopLosers`)).map(normalizeQuote).filter(Boolean).slice(0, 12); } catch {}
-  return out;
+// ShareBazaar is per-symbol; it has no market-wide movers list.
+export async function fetchMovers() {
+  return { gainers: [], losers: [] };
 }
 
+// "Test connection" — hit a known-good symbol.
 export async function pingApi(api) {
-  const data = await getJSON(`${api}/health`, 8000);
-  return data;
+  return await getJSON(`${base(api)}/api?symbol=NABIL`, 8000);
 }
 
-// Merge live prices onto the saved watchlist -> the shape App.js renders.
+// Merge live prices onto the saved watchlist. Falls back to the manual price.
 export function mergeWatchlist(watchlist, quoteMap) {
   return watchlist.map((w) => {
     const q = quoteMap[String(w.symbol).toUpperCase()];
+    const live = q ? q.ltp : null;
+    const manual = w.manualPrice != null && w.manualPrice !== '' ? Number(w.manualPrice) : null;
+    const price = live != null ? live : manual;
     return {
       ...w,
-      price: q ? q.ltp : null,
+      price,
+      isManual: live == null && manual != null,
       percentChange: q ? q.percentChange : null,
       volume: q ? q.volume : null,
-      watchlist: w.alert, // App.js reads `.watchlist` for alert thresholds
+      watchlist: w.alert,
     };
   });
 }
@@ -185,9 +176,10 @@ export async function loadData() {
   let quoteMap = {};
   let index = { name: 'NEPSE Index', value: null, changePct: 0, ...indexBand };
   try {
-    [quoteMap, index] = await Promise.all([fetchQuoteMap(api), fetchIndex(api, indexBand)]);
+    const symbols = watchlist.map((w) => w.symbol);
+    [quoteMap, index] = await Promise.all([fetchQuoteMap(api, symbols), fetchIndex(api, indexBand)]);
     live = Object.keys(quoteMap).length > 0;
-    if (!live) error = 'Connected, but no quotes returned (market may be closed or schema changed).';
+    if (!live) error = 'No live prices returned (market may be closed, or symbols not found on this feed).';
   } catch (e) {
     error = String(e.message || e);
   }

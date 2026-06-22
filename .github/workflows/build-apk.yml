@@ -1,34 +1,43 @@
 name: Build Android APK
+
+# Run manually from the Actions tab, or automatically on every push to main.
 on:
   workflow_dispatch:
   push:
     branches: [main]
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-      - uses: actions/setup-java@v4
+
+      - name: Set up Java (JDK 17)
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
-      - run: npm install
-      - run: npx expo prebuild -p android --no-install
-      - name: Add missing splash color
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate native Android project
+        run: npx expo prebuild -p android --no-install
+
+      - name: Build debug APK
         run: |
-          mkdir -p android/app/src/main/res/values
-          cat > android/app/src/main/res/values/splash_fix.xml <<'XML'
-          <resources>
-              <color name="splashscreen_background">#0B1220</color>
-          </resources>
-          XML
-      - name: Build release APK
-        run: chmod +x android/gradlew && cd android && ./gradlew assembleRelease --no-daemon
-      - uses: actions/upload-artifact@v4
+          chmod +x android/gradlew
+          cd android && ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
         with:
           name: nepse-analyzer-apk
-          path: android/app/build/outputs/apk/release/app-release.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
