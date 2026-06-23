@@ -223,8 +223,8 @@ export default function ChartScreen() {
                 <Text style={styles.pickSym}>{symbol}</Text>
                 <Text style={{ color: '#2E9E6B', fontWeight: '800', fontSize: 12 }}>ACCUMULATE · R:R 1:{a.rr.toFixed(1)}</Text>
               </View>
-              <Text style={styles.setupLine}><Text style={{ color: C.gold, fontWeight: '800' }}>Entry</Text> {fmt(a.entry)}   <Text style={{ color: C.bad, fontWeight: '800' }}>SL</Text> {fmt(a.stop)}</Text>
-              <Text style={styles.setupLine}>S1 {fmt(a.S1)}   S2 {fmt(a.S2)}</Text>
+              <Text style={styles.setupLine}><Text style={{ color: C.gold, fontWeight: '800' }}>Buy zone</Text> {fmt(a.entryLow)}–{fmt(a.entryHigh)}   ·   Now {fmt(a.price)}</Text>
+              <Text style={styles.setupLine}><Text style={{ color: C.bad, fontWeight: '800' }}>SL</Text> {fmt(a.stop)}   ·   Support {fmt(a.support)}</Text>
               <Text style={styles.setupLine}><Text style={{ color: C.good, fontWeight: '800' }}>T1</Text> {fmt(a.t1)} (+{(((a.t1 - a.entry) / a.entry) * 100).toFixed(1)}%)   <Text style={{ color: '#13855F', fontWeight: '800' }}>T2</Text> {fmt(a.t2)} (+{(((a.t2 - a.entry) / a.entry) * 100).toFixed(1)}%)</Text>
             </TouchableOpacity>
           ))}
@@ -272,9 +272,35 @@ export default function ChartScreen() {
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Levels &amp; targets</Text>
-            <Text style={styles.lvl}><Text style={{ color: C.bad, fontWeight: '800' }}>Stop</Text> {fmt(A.stop)}   <Text style={{ color: C.gold, fontWeight: '800' }}>Entry</Text> {fmt(A.entry)}</Text>
-            <Text style={styles.lvl}><Text style={{ color: C.good, fontWeight: '800' }}>T1</Text> {fmt(A.t1)} (+{(((A.t1 - A.entry) / A.entry) * 100).toFixed(1)}%)   <Text style={{ color: '#13855F', fontWeight: '800' }}>T2</Text> {fmt(A.t2)} (+{(((A.t2 - A.entry) / A.entry) * 100).toFixed(1)}%)</Text>
+            <Text style={styles.cardTitle}>Swing plan</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4 }}>
+              <View>
+                <Text style={styles.statK}>BUY ZONE</Text>
+                <Text style={{ color: C.gold, fontSize: 20, fontWeight: '900' }}>{fmt(A.entryLow)} – {fmt(A.entryHigh)}</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={styles.statK}>CURRENT</Text>
+                <Text style={{ color: A.price >= A.entryLow && A.price <= A.entryHigh ? C.good : C.text, fontSize: 20, fontWeight: '900' }}>{fmt(A.price)}</Text>
+              </View>
+            </View>
+            <Text style={{ color: A.price >= A.entryLow && A.price <= A.entryHigh ? C.good : C.textDim, fontSize: 12, fontWeight: '700', marginBottom: 10 }}>
+              {A.price < A.entryLow ? 'Below buy zone — already cheap, check why' : A.price <= A.entryHigh ? '● In buy zone now' : 'Above buy zone — wait for a pullback'}
+            </Text>
+            <View style={styles.grid}>
+              {[
+                ['Support', fmt(A.support), C.textDim],
+                ['SL', fmt(A.stop), C.bad],
+                ['R:R', `1:${A.rr.toFixed(1)}`, A.rr >= 2 ? C.good : C.textDim],
+                ['T1', `${fmt(A.t1)} +${(((A.t1 - A.entry) / A.entry) * 100).toFixed(1)}%`, C.good],
+                ['T2', `${fmt(A.t2)} +${(((A.t2 - A.entry) / A.entry) * 100).toFixed(1)}%`, '#13855F'],
+              ].map(([k, v, col], i) => (
+                <View key={i} style={styles.statCard}>
+                  <Text style={styles.statK}>{k}</Text>
+                  <Text style={[styles.statV, { color: col }]}>{v}</Text>
+                </View>
+              ))}
+            </View>
+            <Text style={[styles.disc, { marginTop: 8 }]}>{A.holdNote}</Text>
           </View>
 
           <Text style={styles.disc}>Descriptive analysis on Chukul candle history — not a prediction or trade advice. NEPSE is thin and can move on news/liquidity, not chart structure. Verify before acting.</Text>

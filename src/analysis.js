@@ -47,12 +47,18 @@ export function analyze(data) {
   const last = data[data.length - 1];
   const price = last.c;
 
+  const MINGAP = 0.03; // ignore micro swings closer than ~3% — NEPSE moves in bigger swings (T+2, ~10% band)
   const lowVals = lows.map((i) => data[i].l);
   const highVals = highs.map((i) => data[i].h);
-  const belowLows = lowVals.filter((v) => v < price);
-  const aboveHighs = highVals.filter((v) => v > price);
-  const support = belowLows.length ? Math.max(...belowLows) : Math.min(...data.map((d) => d.l));
-  const resistance = aboveHighs.length ? Math.min(...aboveHighs) : Math.max(...data.map((d) => d.h));
+  const recentLo = Math.min(...data.map((d) => d.l));
+  const recentHi = Math.max(...data.map((d) => d.h));
+
+  const sigBelow = lowVals.filter((v) => v <= price * (1 - MINGAP));
+  const sigAbove = highVals.filter((v) => v >= price * (1 + MINGAP));
+  const support = sigBelow.length ? Math.max(...sigBelow) : Math.min(recentLo, price * 0.95);
+  const resistance = sigAbove.length
+    ? Math.min(...sigAbove)
+    : (recentHi >= price * (1 + MINGAP) ? recentHi : price * 1.08);
 
   const PP = (last.h + last.l + last.c) / 3;
   const R1 = 2 * PP - last.l, S1 = 2 * PP - last.h;
@@ -90,11 +96,17 @@ export function analyze(data) {
   const eq = (rangeHi + rangeLo) / 2;
   const zone = price > eq ? "Premium" : "Discount";
 
-  const entry = price;
-  const stop = Math.min(support * 0.985, lastSwingLow != null ? lastSwingLow : support * 0.985);
+  // NEPSE swing plan: no intraday (T+2 settlement) + ~10% daily band, so plan a
+  // multi-day swing — accumulate in a zone near support, target significant levels.
+  const entryLow = support;
+  const entryHigh = support * 1.03;
+  const entry = support * 1.02; // planning entry = within the buy zone, not today's close
+  const stop = Math.min(support * 0.96, lastSwingLow != null ? lastSwingLow * 0.99 : support * 0.96);
   const t1 = resistance;
-  const t2 = resistance + (resistance - support);
+  let t2 = resistance + (resistance - support); // measured move beyond resistance
+  if (t2 < t1 * 1.04) t2 = t1 * 1.06; // keep T2 a worthwhile distance past T1
   const rr = (t1 - entry) / Math.max(entry - stop, 1e-6);
+  const holdNote = 'NEPSE settles T+2 — plan as a multi-day swing, not an intraday trade.';
 
   let signal = "HOLD";
   if (price > resistance) signal = "BREAKOUT";
@@ -106,7 +118,7 @@ export function analyze(data) {
 
   return {
     e20, e50, rsi, highs, lows, support, resistance, PP, R1, S1, R2, S2,
-    trend, structure, ob, fvg, eq, zone, entry, stop, t1, t2, rr, price, signal,
+    trend, structure, ob, fvg, eq, zone, entry, entryLow, entryHigh, stop, t1, t2, rr, holdNote, price, signal,
     rsiNow: rsi[rsi.length - 1], e20Now: e20[e20.length - 1], e50Now: e50[e50.length - 1],
   };
 }
