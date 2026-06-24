@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, FlatList,
   ActivityIndicator, StyleSheet, Dimensions, Keyboard,
@@ -13,13 +13,15 @@ const fmt = (n) => (n == null || isNaN(n) ? '—' : Number(n).toLocaleString('en
 const SIGNAL_COLOR = { BREAKOUT: C.good, ACCUMULATE: '#2E9E6B', HOLD: C.gold, TRIM: '#E5A23A', BREAKDOWN: C.bad };
 
 // ---- SVG chart ----
-function ChartView({ data, A, show }) {
-  const W = Math.round(Dimensions.get('window').width) - 32;
+function ChartView({ data, A, show, zoom = 1 }) {
+  const screenW = Math.round(Dimensions.get('window').width) - 32;
   const padL = 4, padR = 64;
   const priceTop = 8, priceH = 230, volTop = 246, volH = 34, rsiTop = 292, rsiH = 64;
   const H = rsiTop + rsiH + 16;
   const n = data.length;
-  const xStep = (W - padL - padR) / n;
+  const baseStep = (screenW - padL - padR) / n;
+  const xStep = baseStep * zoom;
+  const W = Math.max(screenW, padL + padR + n * xStep);
   const cx = (i) => padL + i * xStep + xStep / 2;
 
   const prices = [...data.map((d) => d.h), ...data.map((d) => d.l), A.support, A.resistance, A.t1, A.t2, A.stop];
@@ -75,6 +77,11 @@ function ChartView({ data, A, show }) {
       {show.ema && <Path d={path(A.e20, y)} fill="none" stroke={C.gold} strokeWidth="1.5" />}
       {show.ema && <Path d={path(A.e50, y)} fill="none" stroke="#7AA2F7" strokeWidth="1.5" />}
 
+      {(A.swingLabels || []).slice(-6).map((s, idx) => (
+        <SvgText key={'sl' + idx} x={cx(s.i)} y={s.type === 'H' ? y(s.p) - 4 : y(s.p) + 11}
+          fill={s.label === 'HH' || s.label === 'HL' ? C.good : C.bad} fontSize="8" fontWeight="bold" textAnchor="middle">{s.label}</SvgText>
+      ))}
+
       <Lbl p={A.resistance} t={`R ${fmt(A.resistance)}`} color={C.bad} />
       <Lbl p={A.support} t={`S ${fmt(A.support)}`} color={C.good} />
       {show.tgt && <Lbl p={A.t2} t={`T2 ${fmt(A.t2)}`} color="#13855F" />}
@@ -107,6 +114,8 @@ export default function ChartScreen() {
   const [err, setErr] = useState('');
   const [show, setShow] = useState({ ema: true, smc: true, tgt: true });
   const [scan, setScan] = useState({ loading: false, results: null, err: '' });
+  const [zoom, setZoom] = useState(1);
+  const hRef = useRef(null);
 
   useEffect(() => { getCookie().then((c) => { setCk(c); setCookieInput(c); }); }, []);
 
@@ -244,16 +253,25 @@ export default function ChartScreen() {
             </View>
           </View>
 
-          <View style={{ flexDirection: 'row', gap: 6, marginTop: 10 }}>
+          <View style={{ flexDirection: 'row', gap: 6, marginTop: 10, alignItems: 'center' }}>
             {['ema', 'smc', 'tgt'].map((k) => (
               <TouchableOpacity key={k} onPress={() => setShow((s) => ({ ...s, [k]: !s[k] }))}
                 style={[styles.chip, { backgroundColor: show[k] ? C.accent : 'transparent', borderColor: show[k] ? C.accent : C.border }]}>
                 <Text style={{ color: show[k] ? '#fff' : C.textDim, fontSize: 12, fontWeight: '700' }}>{k === 'ema' ? 'EMA' : k === 'smc' ? 'SMC' : 'Targets'}</Text>
               </TouchableOpacity>
             ))}
+            <View style={{ flex: 1 }} />
+            <TouchableOpacity onPress={() => setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)))} style={styles.zoomBtn}><Text style={styles.zoomTxt}>−</Text></TouchableOpacity>
+            <Text style={{ color: C.textDim, fontSize: 11, width: 30, textAlign: 'center' }}>{zoom}×</Text>
+            <TouchableOpacity onPress={() => setZoom((z) => Math.min(5, +(z + 0.5).toFixed(1)))} style={styles.zoomBtn}><Text style={styles.zoomTxt}>＋</Text></TouchableOpacity>
           </View>
 
-          <View style={styles.chartCard}><ChartView data={data} A={A} show={show} /></View>
+          <View style={styles.chartCard}>
+            <ScrollView horizontal ref={hRef} showsHorizontalScrollIndicator
+              onContentSizeChange={() => { if (zoom > 1 && hRef.current) hRef.current.scrollToEnd({ animated: false }); }}>
+              <ChartView data={data} A={A} show={show} zoom={zoom} />
+            </ScrollView>
+          </View>
 
           <View style={styles.grid}>
             {[
@@ -303,6 +321,26 @@ export default function ChartScreen() {
             <Text style={[styles.disc, { marginTop: 8 }]}>{A.holdNote}</Text>
           </View>
 
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Signal quality</Text>
+            <View style={styles.grid}>
+              {[
+                ['Structure', (A.recentLabels && A.recentLabels.join(' ') ) || '—', A.structureBias === 'Bullish' ? C.good : A.structureBias === 'Bearish' ? C.bad : C.textDim],
+                ['Vol confirm', `${A.volScore} ${A.volLabel}`, A.volScore >= 60 ? C.good : A.volScore <= 40 ? C.bad : C.textDim],
+                ['Support str', `${A.supStrength}/100`, A.supStrength >= 50 ? C.good : C.textDim],
+                ['Resist str', `${A.resStrength}/100`, A.resStrength >= 50 ? C.bad : C.textDim],
+                ['Bias', A.structureBias, A.structureBias === 'Bullish' ? C.good : A.structureBias === 'Bearish' ? C.bad : C.textDim],
+                ['Hist hit-rate', A.winRates && A.winRates[A.signal] && A.winRates[A.signal].rate != null ? `${A.winRates[A.signal].rate}% n${A.winRates[A.signal].n}` : '—', C.text],
+              ].map(([k, v, col], i) => (
+                <View key={i} style={styles.statCard}>
+                  <Text style={styles.statK}>{k}</Text>
+                  <Text style={[styles.statV, { color: col, fontSize: 13 }]}>{v}</Text>
+                </View>
+              ))}
+            </View>
+            <Text style={[styles.disc, { marginTop: 8 }]}>Hit-rate = rolling in-sample backtest on recent candles (did price reach T1 before SL within ~10 days). Descriptive of the past on a thin market — not a prediction. Small n is unreliable.</Text>
+          </View>
+
           <Text style={styles.disc}>Descriptive analysis on Chukul candle history — not a prediction or trade advice. NEPSE is thin and can move on news/liquidity, not chart structure. Verify before acting.</Text>
         </>
       )}
@@ -349,4 +387,6 @@ const styles = StyleSheet.create({
   scanBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 12 },
   setup: { backgroundColor: C.bg, borderWidth: 1, borderColor: C.border, borderRadius: 10, padding: 11, marginTop: 8 },
   setupLine: { color: C.text, fontSize: 12.5, marginTop: 3 },
+  zoomBtn: { width: 34, height: 30, borderRadius: 8, borderWidth: 1, borderColor: C.border, alignItems: 'center', justifyContent: 'center' },
+  zoomTxt: { color: C.text, fontSize: 18, fontWeight: '800', lineHeight: 20 },
 });

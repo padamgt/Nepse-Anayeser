@@ -1,4 +1,7 @@
 // Pure analysis engine (no UI) — EMA, RSI, swing S/R, pivots, SMC, targets.
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
+
 export const emaArr = (vals, p) => {
   const k = 2 / (p + 1);
   let prev;
@@ -96,7 +99,46 @@ export function analyze(data) {
   const eq = (rangeHi + rangeLo) / 2;
   const zone = price > eq ? "Premium" : "Discount";
 
-  // NEPSE swing plan: no intraday (T+2 settlement) + ~10% daily band, so plan a
+  // ---- Market structure labels: HH / HL / LH / LL ----
+  const pts = [
+    ...highs.map((i) => ({ i, type: 'H', p: data[i].h })),
+    ...lows.map((i) => ({ i, type: 'L', p: data[i].l })),
+  ].sort((a, b) => a.i - b.i);
+  let lastH = null, lastL = null;
+  const swingLabels = [];
+  for (const pt of pts) {
+    if (pt.type === 'H') { pt.label = lastH == null ? 'H' : pt.p > lastH ? 'HH' : 'LH'; lastH = pt.p; }
+    else { pt.label = lastL == null ? 'L' : pt.p > lastL ? 'HL' : 'LL'; lastL = pt.p; }
+    swingLabels.push(pt);
+  }
+  const recentLabels = swingLabels.slice(-3).map((s) => s.label);
+  const bull = swingLabels.slice(-4).filter((s) => s.label === 'HH' || s.label === 'HL').length;
+  const bear = swingLabels.slice(-4).filter((s) => s.label === 'LH' || s.label === 'LL').length;
+  const structureBias = bull > bear ? 'Bullish' : bear > bull ? 'Bearish' : 'Mixed';
+
+  // ---- Volume confirmation score (0-100) ----
+  const vN = Math.min(20, data.length);
+  const vRecent = data.slice(-vN);
+  const avgVol = mean(data.slice(-vN).map((d) => d.v)) || 1;
+  let upVol = 0, dnVol = 0;
+  vRecent.forEach((d) => { if (d.c >= d.o) upVol += d.v; else dnVol += d.v; });
+  const volScore = Math.round(clamp((upVol / (upVol + dnVol || 1)) * 100, 0, 100));
+  const lastVolRatio = data[data.length - 1].v / avgVol;
+  const volLabel = volScore >= 60 ? 'Buyers' : volScore <= 40 ? 'Sellers' : 'Balanced';
+
+  // ---- Support / resistance strength (touch count, 0-100) ----
+  const tol = 0.02;
+  const supTouches = lows.filter((i) => Math.abs(data[i].l - support) / support <= tol).length
+    + highs.filter((i) => Math.abs(data[i].h - support) / support <= tol).length;
+  const resTouches = highs.filter((i) => Math.abs(data[i].h - resistance) / resistance <= tol).length
+    + lows.filter((i) => Math.abs(data[i].l - resistance) / resistance <= tol).length;
+  const supStrength = Math.round(clamp((supTouches / 4) * 100, 0, 100));
+  const resStrength = Math.round(clamp((resTouches / 4) * 100, 0, 100));
+
+  // ---- Backtested hit-rate per signal (rolling, no look-ahead in signal) ----
+  const winRates = backtest(data, 10);
+
+
   // multi-day swing — accumulate in a zone near support, target significant levels.
   const entryLow = support;
   const entryHigh = support * 1.03;
@@ -119,6 +161,42 @@ export function analyze(data) {
   return {
     e20, e50, rsi, highs, lows, support, resistance, PP, R1, S1, R2, S2,
     trend, structure, ob, fvg, eq, zone, entry, entryLow, entryHigh, stop, t1, t2, rr, holdNote, price, signal,
+    swingLabels, recentLabels, structureBias, volScore, volLabel, lastVolRatio, supStrength, resStrength,
+    supTouches, resTouches, winRates,
     rsiNow: rsi[rsi.length - 1], e20Now: e20[e20.length - 1], e50Now: e50[e50.length - 1],
   };
+}
+
+// Rolling backtest: at each past candle, derive the signal from ONLY prior data,
+// then look forward `horizon` candles to see if price reached T1 (resistance)
+// before SL (support*0.96). In-sample & descriptive — NOT a prediction.
+export function backtest(data, horizon = 10) {
+  const tally = {
+    ACCUMULATE: { n: 0, w: 0 }, HOLD: { n: 0, w: 0 }, TRIM: { n: 0, w: 0 },
+    BREAKOUT: { n: 0, w: 0 }, BREAKDOWN: { n: 0, w: 0 },
+  };
+  for (let i = 40; i < data.length - 1; i++) {
+    const win = data.slice(Math.max(0, i - 119), i + 1);
+    const price = win[win.length - 1].c;
+    const { highs: H, lows: L } = swings(win, 2);
+    const lo = L.map((j) => win[j].l).filter((v) => v <= price * 0.97);
+    const hi = H.map((j) => win[j].h).filter((v) => v >= price * 1.03);
+    const sup = lo.length ? Math.max(...lo) : Math.min(...win.map((d) => d.l));
+    const allHi = Math.max(...win.map((d) => d.h));
+    const rst = hi.length ? Math.min(...hi) : (allHi >= price * 1.03 ? allHi : price * 1.08);
+    let sig = 'HOLD';
+    if (price > rst) sig = 'BREAKOUT';
+    else if (price < sup) sig = 'BREAKDOWN';
+    else { const pos = (price - sup) / (rst - sup || 1); sig = pos <= 0.25 ? 'ACCUMULATE' : pos >= 0.75 ? 'TRIM' : 'HOLD'; }
+    const t1 = rst, sl = sup * 0.96;
+    let outcome = null;
+    for (let k = i + 1; k <= Math.min(data.length - 1, i + horizon); k++) {
+      if (data[k].h >= t1) { outcome = 'win'; break; }
+      if (data[k].l <= sl) { outcome = 'loss'; break; }
+    }
+    if (outcome) { tally[sig].n++; if (outcome === 'win') tally[sig].w++; }
+  }
+  const out = {};
+  for (const k of Object.keys(tally)) out[k] = tally[k].n ? { n: tally[k].n, rate: Math.round((tally[k].w / tally[k].n) * 100) } : { n: 0, rate: null };
+  return out;
 }
