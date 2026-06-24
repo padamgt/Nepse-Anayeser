@@ -3,6 +3,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getWatchlist, getIndexBand } from './data';
 import { analyze } from './analysis';
+import { loadJournal, liveStats } from './journal';
 
 const KEY_COOKIE = 'chukul.session';
 export const STOCK_LIST_URL = 'https://chukul.com/api/stock/';
@@ -118,6 +119,8 @@ export async function loadAnalysis() {
       stocks.push({ ...w, price: w.manualPrice ? Number(w.manualPrice) : null, support: w.support, resistance: w.resistance, watchlist: w.alert, percentChange: null });
     }
   }
+  // Track record reads from the journal (which is fed by Chart-tab searches, not the watchlist).
+  const liveRecord = liveStats(await loadJournal());
 
   // NEPSE index from Chukul (symbol "NEPSE"); keep user's band; null -> shows "—"
   let index = { name: 'NEPSE Index', value: null, changePct: 0, ...indexBand };
@@ -137,6 +140,6 @@ export async function loadAnalysis() {
   if (!cookieWorks) error = 'Chukul cookie may have expired — re-paste it in Settings or the Chart tab.';
   else if (watchlist.length && !anyStockOk) error = 'Index loaded but watchlist prices are missing — try Pull to refresh.';
   return {
-    live: cookieWorks, error, hasCookie: true, stocks, index, indexBand, watchlist,
+    live: cookieWorks, error, hasCookie: true, stocks, index, indexBand, watchlist, liveRecord,
   };
 }

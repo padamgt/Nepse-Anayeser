@@ -8,6 +8,7 @@ import { C } from './theme';
 import { analyze } from './analysis';
 import { getCookie, setCookie, fetchStockList, fetchCandles } from './chukul';
 import { getWatchlist } from './data';
+import { loadJournal, saveJournal, recordInto, evaluateInto } from './journal';
 
 const fmt = (n) => (n == null || isNaN(n) ? '—' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: 1 }));
 const SIGNAL_COLOR = { BREAKOUT: C.good, ACCUMULATE: '#2E9E6B', HOLD: C.gold, TRIM: '#E5A23A', BREAKDOWN: C.bad };
@@ -157,6 +158,16 @@ export default function ChartScreen() {
       const candles = await fetchCandles(symbol, cookie);
       if (candles.length < 20) throw new Error('Not enough candle history returned for analysis.');
       setData(candles);
+      // Journal: log this searched stock's signal and score any open entries for it.
+      try {
+        const a = analyze(candles);
+        if (a) {
+          const journal = await loadJournal();
+          let changed = evaluateInto(journal, symbol, candles);
+          if (recordInto(journal, symbol, a, candles[candles.length - 1].t)) changed = true;
+          if (changed) await saveJournal(journal);
+        }
+      } catch (e) { /* journaling is best-effort */ }
     } catch (e) { setErr(String(e.message || e)); }
     finally { setLoading(false); }
   };
@@ -391,24 +402,34 @@ export default function ChartScreen() {
             </View>
             {A.report.historicalPerformance.matches >= 5 ? (
               <>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginVertical: 6 }}>
+                  <View>
+                    <Text style={styles.statK}>EXPECTANCY / TRADE</Text>
+                    <Text style={{ color: A.report.historicalPerformance.expectancy >= 0 ? C.good : C.bad, fontSize: 22, fontWeight: '900' }}>{A.report.historicalPerformance.expectancy > 0 ? '+' : ''}{A.report.historicalPerformance.expectancy}%</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={styles.statK}>PROFIT FACTOR</Text>
+                    <Text style={{ color: (A.report.historicalPerformance.profitFactor || 0) >= 1.3 ? C.good : C.gold, fontSize: 22, fontWeight: '900' }}>{A.report.historicalPerformance.profitFactor == null ? '∞' : A.report.historicalPerformance.profitFactor}</Text>
+                  </View>
+                </View>
                 <View style={styles.grid}>
                   {[
-                    ['Matches', `${A.report.historicalPerformance.matches}`, C.text],
-                    ['Wins', `${A.report.historicalPerformance.wins}`, C.good],
-                    ['Losses', `${A.report.historicalPerformance.losses}`, C.bad],
                     ['Hit rate', `${A.report.historicalPerformance.hitRate}%`, A.report.historicalPerformance.hitRate >= 60 ? C.good : C.gold],
-                    ['Avg return', `${A.report.historicalPerformance.avgReturn}%`, A.report.historicalPerformance.avgReturn >= 0 ? C.good : C.bad],
+                    ['Breakeven', `${A.report.historicalPerformance.breakevenWR}%`, C.textDim],
+                    ['Avg win', `+${A.report.historicalPerformance.avgWin}%`, C.good],
+                    ['Avg loss', `${A.report.historicalPerformance.avgLoss}%`, C.bad],
+                    ['Matches', `${A.report.historicalPerformance.matches}`, C.text],
                     ['Avg days', `${A.report.historicalPerformance.avgDays}`, C.text],
                   ].map(([k, v, col], i) => (
                     <View key={i} style={styles.statCard}><Text style={styles.statK}>{k}</Text><Text style={[styles.statV, { color: col }]}>{v}</Text></View>
                   ))}
                 </View>
-                {A.report.historicalPerformance.ci && (
-                  <Text style={[styles.hint, { marginTop: 8 }]}>
-                    True hit-rate likely between <Text style={{ color: C.text, fontWeight: '800' }}>{A.report.historicalPerformance.ci.low}%–{A.report.historicalPerformance.ci.high}%</Text> (95% confidence). {A.report.historicalPerformance.unresolved > 0 ? `${A.report.historicalPerformance.unresolved} setup(s) didn’t resolve in 10 days (excluded).` : ''}
-                  </Text>
-                )}
-                <Text style={[styles.disc, { marginTop: 8 }]}>In-sample backtest on this stock’s recent candles. Describes the past on a thin market — not a prediction. n={A.report.historicalPerformance.matches}{A.report.historicalPerformance.matches < 12 ? ' is small, treat with caution' : ''}. Tap ⓘ for how each number is calculated.</Text>
+                <Text style={[styles.hint, { marginTop: 8, color: A.report.historicalPerformance.hasEdge ? C.good : C.gold, fontWeight: '700' }]}>
+                  {A.report.historicalPerformance.hasEdge
+                    ? `Edge: even the low end of the confidence range (${A.report.historicalPerformance.ci.low}%) beats the ${A.report.historicalPerformance.breakevenWR}% breakeven for this R:R.`
+                    : `No proven edge yet: the ${A.report.historicalPerformance.breakevenWR}% breakeven sits inside the confidence range (${A.report.historicalPerformance.ci ? A.report.historicalPerformance.ci.low + '–' + A.report.historicalPerformance.ci.high + '%' : '—'}).`}
+                </Text>
+                <Text style={[styles.disc, { marginTop: 8 }]}>In-sample backtest on this stock’s recent candles — describes the past, not a prediction. {A.report.historicalPerformance.unresolved > 0 ? `${A.report.historicalPerformance.unresolved} setup(s) didn’t resolve in 10 days. ` : ''}n={A.report.historicalPerformance.matches}{A.report.historicalPerformance.matches < 20 ? ', below the 20 needed for a reliable read' : ''}. The real test is the Live track record on the Picks tab. Tap ⓘ for formulas.</Text>
               </>
             ) : (
               <Text style={styles.hint}>Only {A.report.historicalPerformance.matches} similar past setup(s) in recent history — too few to report a meaningful hit-rate. Sample size matters more than a flashy number. Tap ⓘ to see how this is calculated.</Text>
@@ -436,13 +457,15 @@ export default function ChartScreen() {
 function CalcInfoModal({ visible, A, onClose }) {
   const hp = A && A.report ? A.report.historicalPerformance : null;
   const rows = [
+    ['Expectancy / trade', 'The headline metric: average % you’d expect per trade if you repeated this setup. = (WinRate × AvgWin) − (LossRate × |AvgLoss|). Positive = the setup made money historically; a high hit rate with tiny wins can still be negative.', hp && hp.expectancy != null ? `${hp.expectancy > 0 ? '+' : ''}${hp.expectancy}% per trade` : ''],
+    ['Profit factor', 'Total winning % ÷ total losing %. Above 1.0 means wins outweigh losses; 1.3+ is decent, 1.6+ good — on out-of-sample data only.', hp && hp.profitFactor != null ? `${hp.profitFactor}` : ''],
+    ['Breakeven win-rate', '1 ÷ (1 + Risk:Reward) × 100. The hit rate you’d need just to not lose money at this R:R. If your hit rate isn’t clearly above this, there’s no edge.', hp && hp.breakevenWR != null ? `${hp.breakevenWR}% needed` : ''],
     ['Matches', 'Count of past bars whose signal (computed from prior candles only) matched the current signal AND resolved as a win or loss within 10 trading days.', hp ? `${hp.matches} similar setups found` : ''],
-    ['Wins', 'Setups where the high reached Target 1 (resistance) before the low hit the Stop Loss (support − 4%).', hp ? `${hp.wins} wins` : ''],
-    ['Losses', 'Setups where the Stop Loss was hit before Target 1.', hp ? `${hp.losses} losses` : ''],
+    ['Wins / Losses', 'Win = high reached Target 1 before low hit Stop Loss (support − 4%). Loss = Stop Loss first.', hp ? `${hp.wins}W / ${hp.losses}L` : ''],
     ['Hit rate', 'Wins ÷ Matches × 100.', hp && hp.hitRate != null ? `${hp.wins} ÷ ${hp.matches} × 100 = ${hp.hitRate}%` : ''],
-    ['95% interval', 'Wilson score interval — the range the true hit-rate likely falls in given the sample size. Wide = not enough data to trust the headline %.', hp && hp.ci ? `${hp.ci.low}% – ${hp.ci.high}%` : ''],
-    ['Avg return', 'Mean of each setup’s modelled return: +(T1−entry)/entry for wins, −(entry−SL)/entry for losses. Assumes exit exactly at T1 or SL.', hp && hp.avgReturn != null ? `${hp.avgReturn}%` : ''],
-    ['Avg days', 'Mean number of trading days from the signal to hitting T1 or SL.', hp && hp.avgDays != null ? `${hp.avgDays} days` : ''],
+    ['95% interval', 'Wilson score interval — the range the true hit-rate likely falls in given the sample. Wide = not enough data to trust the headline %.', hp && hp.ci ? `${hp.ci.low}% – ${hp.ci.high}%` : ''],
+    ['Avg win / Avg loss', 'Mean % gain on winners and mean % loss on losers, shown separately so payoff asymmetry is visible.', hp && hp.avgWin != null ? `+${hp.avgWin}% / ${hp.avgLoss}%` : ''],
+    ['Avg days', 'Mean trading days from signal to hitting T1 or SL.', hp && hp.avgDays != null ? `${hp.avgDays} days` : ''],
     ['Unresolved', 'Setups that hit neither T1 nor SL within 10 days. Excluded from the rate (a known limitation).', hp ? `${hp.unresolved} excluded` : ''],
   ];
   return (

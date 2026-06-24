@@ -161,6 +161,7 @@ export default function App() {
               onRefresh={onRefresh}
               error={data.error}
               live={data.live}
+              liveRecord={data.liveRecord}
             />
           )}
           {tab === 'watch' && (
@@ -236,7 +237,7 @@ function Header({ index, live }) {
 }
 
 // ---- Best Picks -------------------------------------------------------------
-function BestPicks({ list, query, setQuery, onOpen, refreshing, onRefresh, error, live }) {
+function BestPicks({ list, query, setQuery, onOpen, refreshing, onRefresh, error, live, liveRecord }) {
   return (
     <ScrollView
       style={styles.body}
@@ -255,6 +256,26 @@ function BestPicks({ list, query, setQuery, onOpen, refreshing, onRefresh, error
           <Text style={styles.bannerTxt}>
             {error || 'Chukul cookie may have expired.'} Prices show “—” until it’s refreshed in Settings.
           </Text>
+        </View>
+      )}
+
+      {liveRecord && liveRecord.n > 0 ? (
+        <View style={styles.trackCard}>
+          <Text style={styles.trackTitle}>LIVE TRACK RECORD · since {liveRecord.since}</Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
+            <View><Text style={styles.trackK}>Expectancy/trade</Text><Text style={[styles.trackV, { color: liveRecord.expectancy >= 0 ? C.good : C.bad }]}>{liveRecord.expectancy > 0 ? '+' : ''}{liveRecord.expectancy}%</Text></View>
+            <View><Text style={styles.trackK}>Hit rate</Text><Text style={styles.trackV}>{liveRecord.hitRate == null ? '—' : liveRecord.hitRate + '%'}</Text></View>
+            <View><Text style={styles.trackK}>Profit factor</Text><Text style={styles.trackV}>{liveRecord.pf == null ? '∞' : liveRecord.pf}</Text></View>
+            <View><Text style={styles.trackK}>Resolved</Text><Text style={styles.trackV}>{liveRecord.n}</Text></View>
+          </View>
+          <Text style={styles.trackNote}>
+            Real forward results of signals logged when you open a stock in the Chart tab ({liveRecord.wins}W / {liveRecord.losses}L / {liveRecord.timeouts} timeout, {liveRecord.open} still open). This — not the backtest — is the honest scorecard. {liveRecord.n < 20 ? 'Still building a meaningful sample.' : ''}
+          </Text>
+        </View>
+      ) : (
+        <View style={styles.trackCard}>
+          <Text style={styles.trackTitle}>LIVE TRACK RECORD</Text>
+          <Text style={styles.trackNote}>Building. Each time you open a stock in the Chart tab, the app logs its signal and scores it as price plays out (T1 before SL within 10 days). Revisit stocks over the coming weeks and real, forward results will appear here{liveRecord && liveRecord.open ? ` (${liveRecord.open} signals open)` : ''}.</Text>
         </View>
       )}
 
@@ -769,6 +790,11 @@ const styles = StyleSheet.create({
   search: { backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: 12, color: C.text, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 14, fontSize: 14 },
   banner: { backgroundColor: C.bad + '1A', borderWidth: 1, borderColor: C.bad + '55', borderRadius: 12, padding: 10, marginBottom: 12 },
   bannerTxt: { color: C.bad, fontSize: 12, lineHeight: 17 },
+  trackCard: { backgroundColor: C.card, borderWidth: 1, borderColor: C.accent + '55', borderRadius: 14, padding: 14, marginBottom: 12 },
+  trackTitle: { color: C.accent, fontSize: 11, fontWeight: '800', letterSpacing: 0.6 },
+  trackK: { color: C.textFaint, fontSize: 9, fontWeight: '700', textTransform: 'uppercase' },
+  trackV: { color: C.text, fontSize: 17, fontWeight: '900', marginTop: 2 },
+  trackNote: { color: C.textDim, fontSize: 11.5, lineHeight: 16, marginTop: 8 },
 
   row: { backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: 16, padding: 14, marginBottom: 12 },
   rankBadge: { width: 24, height: 24, borderRadius: 12, backgroundColor: C.cardAlt, alignItems: 'center', justifyContent: 'center', marginRight: 10 },

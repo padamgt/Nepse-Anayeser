@@ -240,7 +240,7 @@ export function analyze(data) {
     support: { price: supInfo.price, strength: supStrength },
     resistance: { price: resInfo.price, strength: resStrength },
     volume: { buyers, sellers, buyerPressure, sellerPressure, relVol, confirms: volumeConfirms },
-    historicalPerformance: { wins: cur.wins || 0, losses: cur.losses || 0, matches: cur.n || 0, unresolved: cur.unresolved || 0, hitRate: cur.rate, ci: cur.ci || null, avgReturn: cur.avgReturn, avgDays: cur.avgDays },
+    historicalPerformance: { wins: cur.wins || 0, losses: cur.losses || 0, matches: cur.n || 0, unresolved: cur.unresolved || 0, hitRate: cur.rate, ci: cur.ci || null, avgReturn: cur.avgReturn, avgWin: cur.avgWin, avgLoss: cur.avgLoss, expectancy: cur.expectancy, profitFactor: cur.profitFactor, avgDays: cur.avgDays, breakevenWR: Math.round(100 / (1 + rr)), hasEdge: !!(cur.ci && cur.rate != null && cur.ci.low > Math.round(100 / (1 + rr))) },
     summary,
   };
 
@@ -260,7 +260,7 @@ export function analyze(data) {
 // then look forward `horizon` candles to see if price reached T1 (resistance)
 // before SL (support*0.96). In-sample & descriptive — NOT a prediction.
 export function backtest(data, horizon = 10) {
-  const mk = () => ({ n: 0, w: 0, l: 0, unresolved: 0, retSum: 0, daySum: 0 });
+  const mk = () => ({ n: 0, w: 0, l: 0, unresolved: 0, wRet: 0, lRet: 0, daySum: 0 });
   const tally = {
     ACCUMULATE: mk(), HOLD: mk(), TRIM: mk(), BREAKOUT: mk(), BREAKDOWN: mk(),
   };
@@ -287,8 +287,8 @@ export function backtest(data, horizon = 10) {
     if (outcome) {
       const t = tally[sig];
       t.n++;
-      if (outcome === 'win') { t.w++; t.retSum += ((t1 - price) / price) * 100; t.daySum += days; }
-      else { t.l++; t.retSum += ((sl - price) / price) * 100; t.daySum += days; }
+      if (outcome === 'win') { t.w++; t.wRet += ((t1 - price) / price) * 100; t.daySum += days; }
+      else { t.l++; t.lRet += ((sl - price) / price) * 100; t.daySum += days; }
     } else {
       tally[sig].unresolved++;
     }
@@ -296,9 +296,17 @@ export function backtest(data, horizon = 10) {
   const out = {};
   for (const k of Object.keys(tally)) {
     const t = tally[k];
-    out[k] = t.n
-      ? { n: t.n, wins: t.w, losses: t.l, unresolved: t.unresolved, rate: Math.round((t.w / t.n) * 100), avgReturn: +(t.retSum / t.n).toFixed(1), avgDays: +(t.daySum / t.n).toFixed(1), ci: wilson(t.w, t.n) }
-      : { n: 0, wins: 0, losses: 0, unresolved: t.unresolved, rate: null, avgReturn: null, avgDays: null, ci: null };
+    if (!t.n) { out[k] = { n: 0, wins: 0, losses: 0, unresolved: t.unresolved, rate: null, avgReturn: null, avgWin: null, avgLoss: null, expectancy: null, profitFactor: null, avgDays: null, ci: null }; continue; }
+    const avgWin = t.w ? +(t.wRet / t.w).toFixed(2) : 0;
+    const avgLoss = t.l ? +(t.lRet / t.l).toFixed(2) : 0;
+    const expectancy = +((t.wRet + t.lRet) / t.n).toFixed(2);
+    const profitFactor = t.lRet !== 0 ? +Math.abs(t.wRet / t.lRet).toFixed(2) : (t.wRet > 0 ? null : 0);
+    out[k] = {
+      n: t.n, wins: t.w, losses: t.l, unresolved: t.unresolved,
+      rate: Math.round((t.w / t.n) * 100),
+      avgReturn: expectancy, avgWin, avgLoss, expectancy, profitFactor,
+      avgDays: +(t.daySum / t.n).toFixed(1), ci: wilson(t.w, t.n),
+    };
   }
   return out;
 }
