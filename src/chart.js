@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, FlatList,
-  ActivityIndicator, StyleSheet, Dimensions, Keyboard,
+  ActivityIndicator, StyleSheet, Dimensions, Keyboard, Modal,
 } from 'react-native';
 import Svg, { Rect, Line, Path, G, Text as SvgText } from 'react-native-svg';
 import { C } from './theme';
@@ -131,6 +131,7 @@ export default function ChartScreen() {
   const [show, setShow] = useState({ ema: true, smc: true, tgt: true });
   const [scan, setScan] = useState({ loading: false, results: null, err: '' });
   const [zoom, setZoom] = useState(1);
+  const [showCalc, setShowCalc] = useState(false);
   const hRef = useRef(null);
 
   useEffect(() => { getCookie().then((c) => { setCk(c); setCookieInput(c); }); }, []);
@@ -280,7 +281,7 @@ export default function ChartScreen() {
             <TouchableOpacity onPress={() => setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)))} style={styles.zoomBtn}><Text style={styles.zoomTxt}>−</Text></TouchableOpacity>
             <Text style={{ color: C.textDim, fontSize: 11, width: 30, textAlign: 'center' }}>{zoom}×</Text>
             <TouchableOpacity onPress={() => setZoom((z) => Math.min(5, +(z + 0.5).toFixed(1)))} style={styles.zoomBtn}><Text style={styles.zoomTxt}>＋</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => { setZoom(1); if (hRef.current) hRef.current.scrollTo({ x: 0, animated: false }); }} style={[styles.zoomBtn, { width: 52 }]}><Text style={[styles.zoomTxt, { fontSize: 12 }]}>Reset</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => { setZoom(1); if (hRef.current) hRef.current.scrollTo({ x: 0, animated: false }); }} style={styles.zoomBtn}><Text style={[styles.zoomTxt, { fontSize: 17 }]}>↺</Text></TouchableOpacity>
           </View>
 
           <View style={styles.chartCard}>
@@ -382,7 +383,12 @@ export default function ChartScreen() {
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Historical performance · {A.signal}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text style={styles.cardTitle}>Historical performance · {A.signal}</Text>
+              <TouchableOpacity onPress={() => setShowCalc(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Text style={{ color: C.accent, fontSize: 16, fontWeight: '800' }}>ⓘ</Text>
+              </TouchableOpacity>
+            </View>
             {A.report.historicalPerformance.matches >= 5 ? (
               <>
                 <View style={styles.grid}>
@@ -397,10 +403,15 @@ export default function ChartScreen() {
                     <View key={i} style={styles.statCard}><Text style={styles.statK}>{k}</Text><Text style={[styles.statV, { color: col }]}>{v}</Text></View>
                   ))}
                 </View>
-                <Text style={[styles.disc, { marginTop: 8 }]}>In-sample backtest on this stock’s recent candles (reached T1 before SL within 10 days). Describes the past on a thin market — not a prediction. n={A.report.historicalPerformance.matches}{A.report.historicalPerformance.matches < 12 ? ' is small, treat with caution' : ''}.</Text>
+                {A.report.historicalPerformance.ci && (
+                  <Text style={[styles.hint, { marginTop: 8 }]}>
+                    True hit-rate likely between <Text style={{ color: C.text, fontWeight: '800' }}>{A.report.historicalPerformance.ci.low}%–{A.report.historicalPerformance.ci.high}%</Text> (95% confidence). {A.report.historicalPerformance.unresolved > 0 ? `${A.report.historicalPerformance.unresolved} setup(s) didn’t resolve in 10 days (excluded).` : ''}
+                  </Text>
+                )}
+                <Text style={[styles.disc, { marginTop: 8 }]}>In-sample backtest on this stock’s recent candles. Describes the past on a thin market — not a prediction. n={A.report.historicalPerformance.matches}{A.report.historicalPerformance.matches < 12 ? ' is small, treat with caution' : ''}. Tap ⓘ for how each number is calculated.</Text>
               </>
             ) : (
-              <Text style={styles.hint}>Only {A.report.historicalPerformance.matches} similar past setup(s) in recent history — too few to report a meaningful hit-rate. Sample size matters more than a flashy number.</Text>
+              <Text style={styles.hint}>Only {A.report.historicalPerformance.matches} similar past setup(s) in recent history — too few to report a meaningful hit-rate. Sample size matters more than a flashy number. Tap ⓘ to see how this is calculated.</Text>
             )}
           </View>
 
@@ -415,7 +426,50 @@ export default function ChartScreen() {
       <TouchableOpacity onPress={() => { setCk(''); }} style={{ marginTop: 24 }}>
         <Text style={{ color: C.textFaint, fontSize: 12 }}>Update Chukul cookie</Text>
       </TouchableOpacity>
+
+      <CalcInfoModal visible={showCalc} A={A} onClose={() => setShowCalc(false)} />
     </ScrollView>
+  );
+}
+
+// How-it's-calculated modal for the Historical Performance metrics.
+function CalcInfoModal({ visible, A, onClose }) {
+  const hp = A && A.report ? A.report.historicalPerformance : null;
+  const rows = [
+    ['Matches', 'Count of past bars whose signal (computed from prior candles only) matched the current signal AND resolved as a win or loss within 10 trading days.', hp ? `${hp.matches} similar setups found` : ''],
+    ['Wins', 'Setups where the high reached Target 1 (resistance) before the low hit the Stop Loss (support − 4%).', hp ? `${hp.wins} wins` : ''],
+    ['Losses', 'Setups where the Stop Loss was hit before Target 1.', hp ? `${hp.losses} losses` : ''],
+    ['Hit rate', 'Wins ÷ Matches × 100.', hp && hp.hitRate != null ? `${hp.wins} ÷ ${hp.matches} × 100 = ${hp.hitRate}%` : ''],
+    ['95% interval', 'Wilson score interval — the range the true hit-rate likely falls in given the sample size. Wide = not enough data to trust the headline %.', hp && hp.ci ? `${hp.ci.low}% – ${hp.ci.high}%` : ''],
+    ['Avg return', 'Mean of each setup’s modelled return: +(T1−entry)/entry for wins, −(entry−SL)/entry for losses. Assumes exit exactly at T1 or SL.', hp && hp.avgReturn != null ? `${hp.avgReturn}%` : ''],
+    ['Avg days', 'Mean number of trading days from the signal to hitting T1 or SL.', hp && hp.avgDays != null ? `${hp.avgDays} days` : ''],
+    ['Unresolved', 'Setups that hit neither T1 nor SL within 10 days. Excluded from the rate (a known limitation).', hp ? `${hp.unresolved} excluded` : ''],
+  ];
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }}>
+        <View style={[styles.card, { borderBottomLeftRadius: 0, borderBottomRightRadius: 0, marginTop: 0, maxHeight: '85%' }]}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <Text style={[styles.cardTitle, { fontSize: 14 }]}>How historical performance is calculated</Text>
+            <TouchableOpacity onPress={onClose}><Text style={{ color: C.textDim, fontSize: 16 }}>✕</Text></TouchableOpacity>
+          </View>
+          <ScrollView style={{ maxHeight: 460 }}>
+            {rows.map(([k, desc, ex], i) => (
+              <View key={i} style={{ marginBottom: 12 }}>
+                <Text style={{ color: C.text, fontWeight: '800', fontSize: 13.5 }}>{k}</Text>
+                <Text style={[styles.hint, { marginTop: 2 }]}>{desc}</Text>
+                {ex ? <Text style={{ color: C.accent, fontSize: 12, marginTop: 3, fontWeight: '700' }}>This stock: {ex}</Text> : null}
+              </View>
+            ))}
+            <Text style={[styles.disc, { marginTop: 4 }]}>
+              Worked example — if 54 setups matched and 34 were wins: Hit rate = 34 ÷ 54 × 100 = 63%. With n=54 the 95% interval is roughly 49%–75%, i.e. “somewhere in the low-to-mid 60s,” not exactly 63%.{'\n\n'}
+              Limitations: backtest is in-sample on ~120 recent candles of this one stock; small samples are noisy; returns assume clean exits at T1/SL with no slippage; NEPSE’s T+2 settlement and thin liquidity mean past patterns may not repeat. This is descriptive, not a prediction or advice.
+            </Text>
+          </ScrollView>
+          <TouchableOpacity style={[styles.btn, { marginTop: 10 }]} onPress={onClose}><Text style={styles.btnTxt}>Got it</Text></TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
   );
 }
 

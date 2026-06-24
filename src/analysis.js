@@ -240,7 +240,7 @@ export function analyze(data) {
     support: { price: supInfo.price, strength: supStrength },
     resistance: { price: resInfo.price, strength: resStrength },
     volume: { buyers, sellers, buyerPressure, sellerPressure, relVol, confirms: volumeConfirms },
-    historicalPerformance: { wins: cur.wins || 0, losses: cur.losses || 0, matches: cur.n || 0, hitRate: cur.rate, avgReturn: cur.avgReturn, avgDays: cur.avgDays },
+    historicalPerformance: { wins: cur.wins || 0, losses: cur.losses || 0, matches: cur.n || 0, unresolved: cur.unresolved || 0, hitRate: cur.rate, ci: cur.ci || null, avgReturn: cur.avgReturn, avgDays: cur.avgDays },
     summary,
   };
 
@@ -260,7 +260,7 @@ export function analyze(data) {
 // then look forward `horizon` candles to see if price reached T1 (resistance)
 // before SL (support*0.96). In-sample & descriptive — NOT a prediction.
 export function backtest(data, horizon = 10) {
-  const mk = () => ({ n: 0, w: 0, l: 0, retSum: 0, daySum: 0 });
+  const mk = () => ({ n: 0, w: 0, l: 0, unresolved: 0, retSum: 0, daySum: 0 });
   const tally = {
     ACCUMULATE: mk(), HOLD: mk(), TRIM: mk(), BREAKOUT: mk(), BREAKDOWN: mk(),
   };
@@ -289,14 +289,26 @@ export function backtest(data, horizon = 10) {
       t.n++;
       if (outcome === 'win') { t.w++; t.retSum += ((t1 - price) / price) * 100; t.daySum += days; }
       else { t.l++; t.retSum += ((sl - price) / price) * 100; t.daySum += days; }
+    } else {
+      tally[sig].unresolved++;
     }
   }
   const out = {};
   for (const k of Object.keys(tally)) {
     const t = tally[k];
     out[k] = t.n
-      ? { n: t.n, wins: t.w, losses: t.l, rate: Math.round((t.w / t.n) * 100), avgReturn: +(t.retSum / t.n).toFixed(1), avgDays: +(t.daySum / t.n).toFixed(1) }
-      : { n: 0, wins: 0, losses: 0, rate: null, avgReturn: null, avgDays: null };
+      ? { n: t.n, wins: t.w, losses: t.l, unresolved: t.unresolved, rate: Math.round((t.w / t.n) * 100), avgReturn: +(t.retSum / t.n).toFixed(1), avgDays: +(t.daySum / t.n).toFixed(1), ci: wilson(t.w, t.n) }
+      : { n: 0, wins: 0, losses: 0, unresolved: t.unresolved, rate: null, avgReturn: null, avgDays: null, ci: null };
   }
   return out;
+}
+
+// Wilson 95% score interval for a win-rate — honest uncertainty band for small n.
+export function wilson(wins, n, z = 1.96) {
+  if (!n) return null;
+  const p = wins / n;
+  const denom = 1 + (z * z) / n;
+  const center = (p + (z * z) / (2 * n)) / denom;
+  const margin = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denom;
+  return { low: Math.round(Math.max(0, center - margin) * 100), high: Math.round(Math.min(1, center + margin) * 100) };
 }
