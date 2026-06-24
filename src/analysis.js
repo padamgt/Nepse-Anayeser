@@ -210,6 +210,13 @@ export function analyze(data) {
   const cSR = ((supStrength - resStrength) / 100) * 15;
   const biasScore = Math.round(clamp(cStruct + cRsi + cEma + cVol + cSR, -100, 100));
   const bias = biasScore >= 50 ? 'Strong Bullish' : biasScore >= 15 ? 'Bullish' : biasScore > -15 ? 'Neutral' : biasScore > -50 ? 'Bearish' : 'Strong Bearish';
+  const biasBreakdown = [
+    { k: 'Trend / Structure', v: cStruct },
+    { k: 'RSI', v: Math.round(cRsi) },
+    { k: 'EMA 20 vs 50', v: cEma },
+    { k: 'Volume', v: Math.round(cVol) },
+    { k: 'Support vs Resistance', v: Math.round(cSR) },
+  ];
   const biasExplain = `Structure ${structureBias} (${cStruct >= 0 ? '+' : ''}${cStruct}), RSI ${Math.round(rsiNow)} (${cRsi >= 0 ? '+' : ''}${Math.round(cRsi)}), EMA20${e20Now > e50Now ? '>' : '<'}EMA50 (${cEma >= 0 ? '+' : ''}${cEma}), volume (${cVol >= 0 ? '+' : ''}${Math.round(cVol)}), S/R balance (${cSR >= 0 ? '+' : ''}${Math.round(cSR)}).`;
 
   // ---- Confidence (0-100) ----
@@ -225,20 +232,82 @@ export function analyze(data) {
   const confidenceLabel = confidence >= 66 ? 'High' : confidence >= 40 ? 'Moderate' : 'Low';
   const confidenceExplain = `Sample n=${cur.n}, trend clarity ${Math.round(sTrendClarity * 100)}%, volume ${volumeConfirms ? 'confirms' : 'mixed'}, S/R quality ${Math.round(sSRq * 100)}%, ${Math.abs(net)}/4 indicators agree.`;
 
-  // ---- Trade quality (0-100) -> grade ----
-  const sRR = clamp(rr / 3, 0, 1);
-  const sAlign = (biasScore > 10 && (signal === 'ACCUMULATE' || signal === 'BREAKOUT')) ? 1 : biasScore > 0 ? 0.6 : 0.3;
-  const sHist = cur.rate != null ? clamp(cur.rate / 100, 0, 1) * clamp(cur.n / 10, 0.3, 1) : 0.3;
-  const tradeQuality = Math.round((sRR * 0.3 + sAlign * 0.2 + (volumeConfirms ? 1 : 0.4) * 0.15 + clamp(supStrength / 100, 0, 1) * 0.15 + sHist * 0.2) * 100);
+  // ---- Reversal confirmation (does current price confirm a turn up?) ----
+  const lastLH = (() => { const lh = swingLabels.filter((s) => s.label === 'LH'); return lh.length ? lh[lh.length - 1].p : resistance; })();
+  const reversalConfirmed = price > e50Now && /up/.test(structure);
+  const supConfirmed = supTouches >= 2;
+  const resConfirmed = resTouches >= 2;
+  const strengthWord = (strength, touches) => touches === 0 ? 'Not confirmed' : strength >= 75 ? 'Very strong' : strength >= 55 ? 'Strong' : strength >= 35 ? 'Moderate' : strength >= 15 ? 'Weak' : 'Very weak';
+  const supWord = strengthWord(supStrength, supTouches);
+  const resWord = strengthWord(resStrength, resTouches);
+
+  // ---- Three separate axes ----
+  // 1) Historical edge (backward, about the pattern class)
+  const histEdge =
+    (cur.n >= 20 && (cur.profitFactor || 0) >= 1.6 && cur.expectancy > 0) ? 'Strong'
+    : (cur.n >= 12 && (cur.profitFactor || 0) >= 1.2 && cur.expectancy > 0) ? 'Moderate'
+    : (cur.n >= 12 && cur.expectancy > 0) ? 'Slight'
+    : (cur.n < 12) ? 'Unproven' : 'Weak';
+  // 2) Current technical condition (present state)
+  const currentCondition = biasScore >= 15 ? 'Bullish' : biasScore <= -15 ? 'Bearish' : 'Neutral';
+
+  // ---- Trade quality: transparent additive breakdown (sums to total) ----
+  const edgeReliable = clamp(cur.n / 20, 0, 1);
+  const pfScore = cur.profitFactor == null ? 0.5 : clamp((cur.profitFactor - 0.8) / 1.2, 0, 1);
+  const edgeScore = (cur.expectancy > 0 ? pfScore : 0) * edgeReliable;
+  const qualityBreakdown = [
+    { k: 'Risk / Reward', v: Math.round(clamp(rr / 3, 0, 1) * 25), max: 25 },
+    { k: 'Trend alignment', v: Math.round(clamp((biasScore + 100) / 200, 0, 1) * 20), max: 20 },
+    { k: 'Volume support', v: Math.round(clamp(buyerPressure / 100, 0, 1) * 15), max: 15 },
+    { k: 'Support quality', v: Math.round(clamp(supStrength / 100, 0, 1) * 15), max: 15 },
+    { k: 'Historical edge', v: Math.round(edgeScore * 15), max: 15 },
+    { k: 'Reversal confirmed', v: reversalConfirmed ? 10 : (regime === 'Accumulation' ? 3 : 0), max: 10 },
+  ];
+  let tradeQuality = qualityBreakdown.reduce((s, x) => s + x.v, 0);
+  // Consistency rule: a still-bearish, unconfirmed setup can't be graded a good trade.
+  let qualityCapNote = '';
+  if (currentCondition === 'Bearish' && !reversalConfirmed && tradeQuality > 60) {
+    tradeQuality = 60;
+    qualityCapNote = 'Capped at 60: trend is still bearish and no reversal is confirmed, regardless of historical edge.';
+  }
   const grade = tradeQuality >= 85 ? 'A+' : tradeQuality >= 70 ? 'A' : tradeQuality >= 55 ? 'B' : tradeQuality >= 40 ? 'C' : 'Avoid';
 
-  const summary = `${bias} bias with ${confidenceLabel.toLowerCase()} confidence (${regime}). Support ${supStrength >= 60 ? 'is strong' : supStrength >= 35 ? 'is moderate' : 'is weak'}; volume favours ${buyerPressure >= 52 ? 'buyers' : sellerPressure >= 52 ? 'sellers' : 'neither side'}. ${cur.n ? `Similar past setups: ${cur.wins}/${cur.n} reached T1 first (${cur.rate}%, avg ${cur.avgReturn}% in ~${cur.avgDays}d).` : 'Too few similar past setups to judge odds.'}`;
+  // ---- Action engine (with consistency) ----
+  const aboveEMA50 = price > e50Now;
+  const reasons = [
+    { ok: cur.expectancy > 0 && cur.n >= 12, text: cur.n >= 12 ? `Historical edge ${cur.expectancy > 0 ? 'positive' : 'negative'} (${histEdge.toLowerCase()})` : 'Historical edge unproven (small sample)' },
+    { ok: regime === 'Accumulation' || regime === 'Uptrend', text: regime === 'Accumulation' ? 'Accumulation forming' : `Regime: ${regime}` },
+    { ok: currentCondition === 'Bullish', text: `Trend ${currentCondition.toLowerCase()}` },
+    { ok: buyerPressure >= 50, text: buyerPressure >= 50 ? 'Buyer pressure dominant' : 'Seller pressure dominant' },
+    { ok: aboveEMA50, text: aboveEMA50 ? 'Above EMA50' : 'Below EMA50' },
+    { ok: reversalConfirmed, text: reversalConfirmed ? 'Reversal confirmed' : 'Reversal not confirmed' },
+    { ok: rr >= 2, text: `Risk:Reward 1:${rr.toFixed(1)}` },
+  ];
+  const triggerPrice = Math.round(Math.max(e50Now, lastLH));
+  let action;
+  if (biasScore >= 40 && tradeQuality >= 70 && reversalConfirmed && rr >= 2) action = 'Strong Buy';
+  else if (biasScore >= 15 && tradeQuality >= 55 && (reversalConfirmed || regime === 'Uptrend') && rr >= 1.5) action = 'Buy';
+  else if ((histEdge === 'Strong' || histEdge === 'Moderate' || regime === 'Accumulation') && !reversalConfirmed) action = 'Watch';
+  else if (Math.abs(biasScore) < 15) action = 'Hold';
+  else action = 'Avoid';
+  if (biasScore < 0 && (action === 'Buy' || action === 'Strong Buy')) action = 'Watch'; // never buy a bearish tape
+  const action_obj = {
+    label: action,
+    reasons,
+    trigger: action === 'Watch' || action === 'Hold' ? `Close above ${triggerPrice} (EMA50 / last lower-high)` : action === 'Avoid' ? 'No long trigger — wait for structure to turn' : `Hold while above ${Math.round(stop)}`,
+  };
+
+  const reconcile = `These three answer different questions and can disagree:\n• Historical edge (${histEdge}) — how this setup TYPE paid in the past.\n• Current condition (${currentCondition}) — what price is doing NOW.\n• Trade quality (${tradeQuality}/100) — whether entering HERE, today, is good timing.\nA strong past edge with a still-bearish, unconfirmed tape = wait for the trigger, don't buy weakness.`;
+
+  const summary = `Historical edge ${histEdge}, current trend ${currentCondition}, trade quality ${grade}. ${regime === 'Accumulation' && currentCondition === 'Bearish' ? 'Accumulation is forming inside a still-bearish trend — reversal not yet confirmed. ' : ''}${cur.n ? `Past ${signal} setups: ${cur.wins}/${cur.n} hit T1 first (${cur.rate}%), expectancy ${cur.expectancy > 0 ? '+' : ''}${cur.expectancy}%.` : 'Too few past setups to judge odds.'}`;
 
   const report = {
-    bias, biasScore, confidence, confidenceLabel, tradeQuality, grade,
+    bias, biasScore, biasBreakdown, confidence, confidenceLabel, tradeQuality, grade, qualityBreakdown, qualityCapNote,
+    historicalEdge: histEdge, currentCondition, reversalConfirmed, reconcile,
+    action: action_obj,
     marketStructure, trend: regime,
-    support: { price: supInfo.price, strength: supStrength },
-    resistance: { price: resInfo.price, strength: resStrength },
+    support: { price: supInfo.price, strength: supStrength, touches: supTouches, label: supWord, confirmed: supConfirmed },
+    resistance: { price: resInfo.price, strength: resStrength, touches: resTouches, label: resWord, confirmed: resConfirmed },
     volume: { buyers, sellers, buyerPressure, sellerPressure, relVol, confirms: volumeConfirms },
     historicalPerformance: { wins: cur.wins || 0, losses: cur.losses || 0, matches: cur.n || 0, unresolved: cur.unresolved || 0, hitRate: cur.rate, ci: cur.ci || null, avgReturn: cur.avgReturn, avgWin: cur.avgWin, avgLoss: cur.avgLoss, expectancy: cur.expectancy, profitFactor: cur.profitFactor, avgDays: cur.avgDays, breakevenWR: Math.round(100 / (1 + rr)), hasEdge: !!(cur.ci && cur.rate != null && cur.ci.low > Math.round(100 / (1 + rr))) },
     summary,
@@ -247,11 +316,12 @@ export function analyze(data) {
   return {
     e20, e50, rsi, highs, lows, support, resistance, PP, R1, S1, R2, S2,
     trend, regime, structure, ob, fvg, eq, zone, entry, entryLow, entryHigh, stop, t1, t2, rr, holdNote, price, signal,
-    swingLabels, recentLabels, marketStructure, structureBias, structureExplain,
+    swingLabels, recentLabels, marketStructure, structureBias, structureExplain, reversalConfirmed,
     volScore, volLabel, buyers, sellers, buyerPressure, sellerPressure, relVol, volumeConfirms, volumeSummary,
-    supStrength, resStrength, supTouches, resTouches, supInfo, resInfo,
-    winRates, bias, biasScore, biasExplain, confidence, confidenceLabel, confidenceExplain,
-    tradeQuality, grade, summary, report,
+    supStrength, resStrength, supTouches, resTouches, supInfo, resInfo, supWord, resWord, supConfirmed, resConfirmed,
+    winRates, bias, biasScore, biasBreakdown, biasExplain, confidence, confidenceLabel, confidenceExplain,
+    historicalEdge: histEdge, currentCondition, tradeQuality, grade, qualityBreakdown, qualityCapNote, action: action_obj,
+    reconcile, summary, report,
     rsiNow, e20Now, e50Now,
   };
 }

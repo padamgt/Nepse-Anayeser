@@ -29,6 +29,73 @@ function StrengthBar({ label, val, sub, color }) {
   );
 }
 
+const ACTION_COLOR = (a) => (a === 'Strong Buy' ? C.good : a === 'Buy' ? '#2E9E6B' : a === 'Watch' ? C.gold : a === 'Hold' ? C.textDim : C.bad);
+const AXIS_COLOR = (label) => {
+  const up = ['Strong', 'Moderate', 'Bullish', 'A+', 'A'];
+  const mid = ['Slight', 'Neutral', 'B', 'Unproven'];
+  if (up.includes(label)) return C.good;
+  if (mid.includes(label)) return C.gold;
+  return C.bad;
+};
+
+// One of the three independent lenses
+function AxisRow({ name, value, note }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border }}>
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: C.text, fontSize: 13.5, fontWeight: '700' }}>{name}</Text>
+        <Text style={{ color: C.textFaint, fontSize: 11, marginTop: 1 }}>{note}</Text>
+      </View>
+      <Text style={{ color: AXIS_COLOR(value), fontSize: 14, fontWeight: '900' }}>{value}</Text>
+    </View>
+  );
+}
+
+// signed contribution row (bias breakdown)
+function BreakdownRow({ k, v, max }) {
+  const signed = max == null;
+  const color = signed ? (v > 0 ? C.good : v < 0 ? C.bad : C.textDim) : C.text;
+  const pct = max != null ? clampPct((v / max) * 100) : clampPct(((v + 40) / 80) * 100);
+  return (
+    <View style={{ marginTop: 7 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3 }}>
+        <Text style={{ color: C.textDim, fontSize: 12.5 }}>{k}</Text>
+        <Text style={{ color, fontSize: 12.5, fontWeight: '800' }}>{signed ? (v >= 0 ? '+' : '') : ''}{v}{max != null ? <Text style={{ color: C.textFaint, fontWeight: '400' }}> / {max}</Text> : null}</Text>
+      </View>
+      <View style={{ height: 6, borderRadius: 3, backgroundColor: C.border, overflow: 'hidden', flexDirection: 'row' }}>
+        {signed && <View style={{ width: '50%', alignItems: 'flex-end' }}>{v < 0 && <View style={{ width: `${clampPct((Math.abs(v) / 40) * 100)}%`, height: 6, backgroundColor: C.bad }} />}</View>}
+        {signed
+          ? <View style={{ width: '50%' }}>{v > 0 && <View style={{ width: `${clampPct((v / 40) * 100)}%`, height: 6, backgroundColor: C.good }} />}</View>
+          : <View style={{ width: `${pct}%`, height: 6, backgroundColor: v / max >= 0.6 ? C.good : v / max >= 0.3 ? C.gold : C.bad }} />}
+      </View>
+    </View>
+  );
+}
+
+function ActionCard({ A }) {
+  const col = ACTION_COLOR(A.action.label);
+  return (
+    <View style={[styles.card, { borderColor: col, borderWidth: 1.5 }]}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ color: C.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 1 }}>ACTION</Text>
+        <Text style={{ color: col, fontSize: 22, fontWeight: '900' }}>{A.action.label.toUpperCase()}</Text>
+      </View>
+      <View style={{ marginTop: 10 }}>
+        {A.action.reasons.map((r, i) => (
+          <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start', marginTop: 4 }}>
+            <Text style={{ color: r.ok ? C.good : C.bad, fontSize: 13, fontWeight: '900', width: 18 }}>{r.ok ? '✓' : '✗'}</Text>
+            <Text style={{ color: C.text, fontSize: 13, flex: 1 }}>{r.text}</Text>
+          </View>
+        ))}
+      </View>
+      <View style={{ marginTop: 10, backgroundColor: C.bg, borderRadius: 8, padding: 9 }}>
+        <Text style={{ color: C.textDim, fontSize: 11, fontWeight: '700', letterSpacing: 0.5 }}>TRIGGER</Text>
+        <Text style={{ color: C.text, fontSize: 13.5, fontWeight: '700', marginTop: 2 }}>{A.action.trigger}</Text>
+      </View>
+    </View>
+  );
+}
+
 // ---- SVG chart ----
 function ChartView({ data, A, show, zoom = 1 }) {
   const screenW = Math.round(Dimensions.get('window').width) - 32;
@@ -350,40 +417,91 @@ export default function ChartScreen() {
             <Text style={[styles.disc, { marginTop: 8 }]}>{A.holdNote}</Text>
           </View>
 
+          {/* ===== ACTION (final decision) ===== */}
+          <ActionCard A={A} />
+
+          {/* ===== THREE LENSES (why metrics can disagree) ===== */}
           <View style={styles.card}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+            <Text style={styles.cardTitle}>Three lenses</Text>
+            <AxisRow name="Historical edge" value={A.historicalEdge} note="How this setup TYPE paid in the past" />
+            <AxisRow name="Current condition" value={A.currentCondition} note="What price is doing right now" />
+            <AxisRow name={`Trade quality · ${A.grade}`} value={`${A.tradeQuality}/100`} note="Whether entering HERE today is good timing" />
+            <Text style={[styles.disc, { marginTop: 8 }]}>{A.reconcile}</Text>
+          </View>
+
+          {/* ===== TRADE QUALITY BREAKDOWN ===== */}
+          <View style={styles.card}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
               <View style={[styles.gradeBox, { borderColor: GRADE_COLOR(A.grade) }]}>
                 <Text style={[styles.gradeTxt, { color: GRADE_COLOR(A.grade) }]}>{A.grade}</Text>
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text style={styles.cardTitle}>Trade quality {A.tradeQuality}/100</Text>
-                <Text style={{ color: C.text, fontSize: 13, marginTop: 2 }}>
-                  Bias <Text style={{ color: A.biasScore > 0 ? C.good : A.biasScore < 0 ? C.bad : C.textDim, fontWeight: '800' }}>{A.bias} ({A.biasScore > 0 ? '+' : ''}{A.biasScore})</Text>
-                </Text>
-                <Text style={{ color: C.text, fontSize: 13 }}>
-                  Confidence <Text style={{ color: A.confidence >= 66 ? C.good : A.confidence >= 40 ? C.gold : C.bad, fontWeight: '800' }}>{A.confidenceLabel} ({A.confidence})</Text>
-                </Text>
+                <Text style={{ color: C.textFaint, fontSize: 11.5, marginTop: 2 }}>Points earned per factor (each capped). They sum to the score.</Text>
               </View>
             </View>
-            {/* bias bar -100..+100 */}
-            <View style={styles.biasTrack}>
+            {A.qualityBreakdown.map((q, i) => <BreakdownRow key={i} k={q.k} v={q.v} max={q.max} />)}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border }}>
+              <Text style={{ color: C.text, fontSize: 13, fontWeight: '800' }}>Total</Text>
+              <Text style={{ color: GRADE_COLOR(A.grade), fontSize: 13, fontWeight: '900' }}>{A.tradeQuality}/100</Text>
+            </View>
+            {A.qualityCapNote ? <Text style={[styles.disc, { marginTop: 8, color: C.gold }]}>⚠ {A.qualityCapNote}</Text> : null}
+          </View>
+
+          {/* ===== BIAS BREAKDOWN ===== */}
+          <View style={styles.card}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={styles.cardTitle}>Bias {A.biasScore > 0 ? '+' : ''}{A.biasScore}</Text>
+              <Text style={{ color: A.biasScore > 0 ? C.good : A.biasScore < 0 ? C.bad : C.textDim, fontSize: 15, fontWeight: '900' }}>{A.bias}</Text>
+            </View>
+            <View style={[styles.biasTrack, { marginTop: 8, marginBottom: 2 }]}>
               <View style={styles.biasMid} />
               <View style={{ position: 'absolute', left: `${clampPct((A.biasScore + 100) / 2)}%`, top: -3, width: 10, height: 16, borderRadius: 3, marginLeft: -5, backgroundColor: A.biasScore > 0 ? C.good : A.biasScore < 0 ? C.bad : C.textDim }} />
             </View>
-            <Text style={[styles.disc, { marginTop: 8 }]}>{A.summary}</Text>
+            {A.biasBreakdown.map((b, i) => <BreakdownRow key={i} k={b.k} v={b.v} max={null} />)}
+            <Text style={{ color: C.text, fontSize: 13, marginTop: 10 }}>
+              Confidence <Text style={{ color: A.confidence >= 66 ? C.good : A.confidence >= 40 ? C.gold : C.bad, fontWeight: '800' }}>{A.confidenceLabel} ({A.confidence})</Text>
+              <Text style={{ color: C.textFaint }}>  — how reliable this read is, not its direction</Text>
+            </Text>
+            <Text style={[styles.disc, { marginTop: 6 }]}>{A.summary}</Text>
           </View>
 
+          {/* ===== MARKET STRUCTURE (+ accumulation note) ===== */}
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Market structure · {A.regime}</Text>
             <Text style={{ color: C.text, fontSize: 16, fontWeight: '800', marginTop: 2 }}>{A.marketStructure}</Text>
             <Text style={[styles.hint, { marginTop: 6 }]}>{A.structureExplain}</Text>
+            {A.regime === 'Accumulation' && A.currentCondition === 'Bearish' ? (
+              <View style={{ marginTop: 8, backgroundColor: C.bg, borderRadius: 8, padding: 9, borderLeftWidth: 3, borderLeftColor: C.gold }}>
+                <Text style={{ color: C.gold, fontSize: 12.5, fontWeight: '800' }}>Accumulation ≠ bullish yet</Text>
+                <Text style={{ color: C.textDim, fontSize: 12, marginTop: 3 }}>
+                  Basing is forming near the lows, but the trend is still bearish and the reversal is <Text style={{ fontWeight: '800' }}>not confirmed</Text>. Accumulation happens during downtrends — it only turns bullish once price confirms (e.g. {A.action.trigger.toLowerCase()}).
+                </Text>
+              </View>
+            ) : null}
           </View>
 
+          {/* ===== SUPPORT / RESISTANCE (labelled, honest) ===== */}
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Support / resistance strength</Text>
-            <StrengthBar label={`Support ${fmt(A.supInfo.price)}`} val={A.supStrength} sub={`${A.supTouches} touches`} color={C.good} />
-            <StrengthBar label={`Resistance ${fmt(A.resInfo.price)}`} val={A.resStrength} sub={`${A.resTouches} touches`} color={C.bad} />
-            <Text style={[styles.disc, { marginTop: 6 }]}>Strength blends touches, volume at the level, bounce quality and how long it’s held. 100 is reserved for exceptional levels.</Text>
+            <Text style={styles.cardTitle}>Support / resistance</Text>
+            {[{ tag: 'Support', info: A.supInfo, str: A.supStrength, t: A.supTouches, word: A.supWord, conf: A.supConfirmed, color: C.good },
+              { tag: 'Resistance', info: A.resInfo, str: A.resStrength, t: A.resTouches, word: A.resWord, conf: A.resConfirmed, color: C.bad }].map((x, i) => (
+              <View key={i} style={{ marginTop: 10 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={{ color: C.text, fontSize: 13.5, fontWeight: '700' }}>
+                    {x.conf ? x.tag : `${x.tag} (candidate)`} <Text style={{ color: x.color, fontWeight: '900' }}>{fmt(x.info.price)}</Text>
+                  </Text>
+                  <Text style={{ color: x.t === 0 ? C.textFaint : x.color, fontSize: 12.5, fontWeight: '800' }}>{x.word}</Text>
+                </View>
+                <View style={{ height: 7, borderRadius: 4, backgroundColor: C.border, overflow: 'hidden', marginTop: 4 }}>
+                  <View style={{ width: `${clampPct(x.str)}%`, height: 7, backgroundColor: x.color }} />
+                </View>
+                <Text style={{ color: C.textFaint, fontSize: 11, marginTop: 3 }}>
+                  {x.str}/100 · {x.t} {x.t === 1 ? 'touch' : 'touches'}{x.t === 0 ? ' — price hasn’t tested this level yet, so it’s an untested candidate' : x.conf ? ' — tested and confirmed' : ' — only lightly tested'}
+                </Text>
+              </View>
+            ))}
+            <Text style={[styles.disc, { marginTop: 8 }]}>Strength blends touches, volume at the level, bounce quality and how long it’s held. A level with 0 touches is a projected candidate, not a confirmed wall.</Text>
           </View>
 
           <View style={styles.card}>
