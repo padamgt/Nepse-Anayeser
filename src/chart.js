@@ -11,6 +11,22 @@ import { getWatchlist } from './data';
 
 const fmt = (n) => (n == null || isNaN(n) ? '—' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: 1 }));
 const SIGNAL_COLOR = { BREAKOUT: C.good, ACCUMULATE: '#2E9E6B', HOLD: C.gold, TRIM: '#E5A23A', BREAKDOWN: C.bad };
+const GRADE_COLOR = (g) => (g === 'A+' || g === 'A' ? C.good : g === 'B' ? C.gold : g === 'C' ? '#E5A23A' : C.bad);
+const clampPct = (v) => Math.max(0, Math.min(100, v));
+
+function StrengthBar({ label, val, sub, color }) {
+  return (
+    <View style={{ marginTop: 8 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3 }}>
+        <Text style={{ color: C.text, fontSize: 12.5, fontWeight: '600' }}>{label}</Text>
+        <Text style={{ color, fontSize: 12.5, fontWeight: '800' }}>{val}/100 {sub ? <Text style={{ color: C.textFaint, fontWeight: '400' }}>· {sub}</Text> : null}</Text>
+      </View>
+      <View style={{ height: 7, borderRadius: 4, backgroundColor: C.border, overflow: 'hidden' }}>
+        <View style={{ width: `${clampPct(val)}%`, height: 7, backgroundColor: color }} />
+      </View>
+    </View>
+  );
+}
 
 // ---- SVG chart ----
 function ChartView({ data, A, show, zoom = 1 }) {
@@ -264,6 +280,7 @@ export default function ChartScreen() {
             <TouchableOpacity onPress={() => setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)))} style={styles.zoomBtn}><Text style={styles.zoomTxt}>−</Text></TouchableOpacity>
             <Text style={{ color: C.textDim, fontSize: 11, width: 30, textAlign: 'center' }}>{zoom}×</Text>
             <TouchableOpacity onPress={() => setZoom((z) => Math.min(5, +(z + 0.5).toFixed(1)))} style={styles.zoomBtn}><Text style={styles.zoomTxt}>＋</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => { setZoom(1); if (hRef.current) hRef.current.scrollTo({ x: 0, animated: false }); }} style={[styles.zoomBtn, { width: 52 }]}><Text style={[styles.zoomTxt, { fontSize: 12 }]}>Reset</Text></TouchableOpacity>
           </View>
 
           <View style={styles.chartCard}>
@@ -322,23 +339,69 @@ export default function ChartScreen() {
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Signal quality</Text>
-            <View style={styles.grid}>
-              {[
-                ['Structure', (A.recentLabels && A.recentLabels.join(' ') ) || '—', A.structureBias === 'Bullish' ? C.good : A.structureBias === 'Bearish' ? C.bad : C.textDim],
-                ['Vol confirm', `${A.volScore} ${A.volLabel}`, A.volScore >= 60 ? C.good : A.volScore <= 40 ? C.bad : C.textDim],
-                ['Support str', `${A.supStrength}/100`, A.supStrength >= 50 ? C.good : C.textDim],
-                ['Resist str', `${A.resStrength}/100`, A.resStrength >= 50 ? C.bad : C.textDim],
-                ['Bias', A.structureBias, A.structureBias === 'Bullish' ? C.good : A.structureBias === 'Bearish' ? C.bad : C.textDim],
-                ['Hist hit-rate', A.winRates && A.winRates[A.signal] && A.winRates[A.signal].rate != null ? `${A.winRates[A.signal].rate}% n${A.winRates[A.signal].n}` : '—', C.text],
-              ].map(([k, v, col], i) => (
-                <View key={i} style={styles.statCard}>
-                  <Text style={styles.statK}>{k}</Text>
-                  <Text style={[styles.statV, { color: col, fontSize: 13 }]}>{v}</Text>
-                </View>
-              ))}
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+              <View style={[styles.gradeBox, { borderColor: GRADE_COLOR(A.grade) }]}>
+                <Text style={[styles.gradeTxt, { color: GRADE_COLOR(A.grade) }]}>{A.grade}</Text>
+              </View>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.cardTitle}>Trade quality {A.tradeQuality}/100</Text>
+                <Text style={{ color: C.text, fontSize: 13, marginTop: 2 }}>
+                  Bias <Text style={{ color: A.biasScore > 0 ? C.good : A.biasScore < 0 ? C.bad : C.textDim, fontWeight: '800' }}>{A.bias} ({A.biasScore > 0 ? '+' : ''}{A.biasScore})</Text>
+                </Text>
+                <Text style={{ color: C.text, fontSize: 13 }}>
+                  Confidence <Text style={{ color: A.confidence >= 66 ? C.good : A.confidence >= 40 ? C.gold : C.bad, fontWeight: '800' }}>{A.confidenceLabel} ({A.confidence})</Text>
+                </Text>
+              </View>
             </View>
-            <Text style={[styles.disc, { marginTop: 8 }]}>Hit-rate = rolling in-sample backtest on recent candles (did price reach T1 before SL within ~10 days). Descriptive of the past on a thin market — not a prediction. Small n is unreliable.</Text>
+            {/* bias bar -100..+100 */}
+            <View style={styles.biasTrack}>
+              <View style={styles.biasMid} />
+              <View style={{ position: 'absolute', left: `${clampPct((A.biasScore + 100) / 2)}%`, top: -3, width: 10, height: 16, borderRadius: 3, marginLeft: -5, backgroundColor: A.biasScore > 0 ? C.good : A.biasScore < 0 ? C.bad : C.textDim }} />
+            </View>
+            <Text style={[styles.disc, { marginTop: 8 }]}>{A.summary}</Text>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Market structure · {A.regime}</Text>
+            <Text style={{ color: C.text, fontSize: 16, fontWeight: '800', marginTop: 2 }}>{A.marketStructure}</Text>
+            <Text style={[styles.hint, { marginTop: 6 }]}>{A.structureExplain}</Text>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Support / resistance strength</Text>
+            <StrengthBar label={`Support ${fmt(A.supInfo.price)}`} val={A.supStrength} sub={`${A.supTouches} touches`} color={C.good} />
+            <StrengthBar label={`Resistance ${fmt(A.resInfo.price)}`} val={A.resStrength} sub={`${A.resTouches} touches`} color={C.bad} />
+            <Text style={[styles.disc, { marginTop: 6 }]}>Strength blends touches, volume at the level, bounce quality and how long it’s held. 100 is reserved for exceptional levels.</Text>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Volume</Text>
+            <StrengthBar label="Buyer pressure" val={A.buyerPressure} sub={`${A.buyers} up days`} color={C.good} />
+            <StrengthBar label="Seller pressure" val={A.sellerPressure} sub={`${A.sellers} down days`} color={C.bad} />
+            <Text style={[styles.hint, { marginTop: 6 }]}>Last bar {A.relVol}× average volume · {A.volumeConfirms ? 'confirms' : 'does not confirm'} the {A.regime.toLowerCase()}.</Text>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Historical performance · {A.signal}</Text>
+            {A.report.historicalPerformance.matches >= 5 ? (
+              <>
+                <View style={styles.grid}>
+                  {[
+                    ['Matches', `${A.report.historicalPerformance.matches}`, C.text],
+                    ['Wins', `${A.report.historicalPerformance.wins}`, C.good],
+                    ['Losses', `${A.report.historicalPerformance.losses}`, C.bad],
+                    ['Hit rate', `${A.report.historicalPerformance.hitRate}%`, A.report.historicalPerformance.hitRate >= 60 ? C.good : C.gold],
+                    ['Avg return', `${A.report.historicalPerformance.avgReturn}%`, A.report.historicalPerformance.avgReturn >= 0 ? C.good : C.bad],
+                    ['Avg days', `${A.report.historicalPerformance.avgDays}`, C.text],
+                  ].map(([k, v, col], i) => (
+                    <View key={i} style={styles.statCard}><Text style={styles.statK}>{k}</Text><Text style={[styles.statV, { color: col }]}>{v}</Text></View>
+                  ))}
+                </View>
+                <Text style={[styles.disc, { marginTop: 8 }]}>In-sample backtest on this stock’s recent candles (reached T1 before SL within 10 days). Describes the past on a thin market — not a prediction. n={A.report.historicalPerformance.matches}{A.report.historicalPerformance.matches < 12 ? ' is small, treat with caution' : ''}.</Text>
+              </>
+            ) : (
+              <Text style={styles.hint}>Only {A.report.historicalPerformance.matches} similar past setup(s) in recent history — too few to report a meaningful hit-rate. Sample size matters more than a flashy number.</Text>
+            )}
           </View>
 
           <Text style={styles.disc}>Descriptive analysis on Chukul candle history — not a prediction or trade advice. NEPSE is thin and can move on news/liquidity, not chart structure. Verify before acting.</Text>
@@ -389,4 +452,8 @@ const styles = StyleSheet.create({
   setupLine: { color: C.text, fontSize: 12.5, marginTop: 3 },
   zoomBtn: { width: 34, height: 30, borderRadius: 8, borderWidth: 1, borderColor: C.border, alignItems: 'center', justifyContent: 'center' },
   zoomTxt: { color: C.text, fontSize: 18, fontWeight: '800', lineHeight: 20 },
+  gradeBox: { width: 58, height: 58, borderRadius: 12, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  gradeTxt: { fontSize: 24, fontWeight: '900' },
+  biasTrack: { height: 10, borderRadius: 5, backgroundColor: C.border, marginTop: 4, position: 'relative', justifyContent: 'center' },
+  biasMid: { position: 'absolute', left: '50%', width: 1, height: 10, backgroundColor: C.textFaint },
 });

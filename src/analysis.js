@@ -93,12 +93,6 @@ export function analyze(data) {
     if (data[i - 1].h < data[i + 1].l) { fvg = { from: i - 1, to: i + 1, bot: data[i - 1].h, top: data[i + 1].l }; break; }
   }
 
-  const recent = data.slice(-30);
-  const rangeHi = Math.max(...recent.map((d) => d.h));
-  const rangeLo = Math.min(...recent.map((d) => d.l));
-  const eq = (rangeHi + rangeLo) / 2;
-  const zone = price > eq ? "Premium" : "Discount";
-
   // ---- Market structure labels: HH / HL / LH / LL ----
   const pts = [
     ...highs.map((i) => ({ i, type: 'H', p: data[i].h })),
@@ -112,58 +106,153 @@ export function analyze(data) {
     swingLabels.push(pt);
   }
   const recentLabels = swingLabels.slice(-3).map((s) => s.label);
+  const marketStructure = swingLabels.slice(-4).map((s) => s.label).join(' → ') || '—';
   const bull = swingLabels.slice(-4).filter((s) => s.label === 'HH' || s.label === 'HL').length;
   const bear = swingLabels.slice(-4).filter((s) => s.label === 'LH' || s.label === 'LL').length;
   const structureBias = bull > bear ? 'Bullish' : bear > bull ? 'Bearish' : 'Mixed';
 
-  // ---- Volume confirmation score (0-100) ----
-  const vN = Math.min(20, data.length);
+  // Regime: Uptrend / Downtrend / Range / Accumulation / Distribution
+  const recent30 = data.slice(-30);
+  const rHi = Math.max(...recent30.map((d) => d.h));
+  const rLo = Math.min(...recent30.map((d) => d.l));
+  const posInRange = (price - rLo) / ((rHi - rLo) || 1);
+  const priorTrend = swingLabels.slice(-8, -4);
+  const priorBear = priorTrend.filter((s) => s.label === 'LH' || s.label === 'LL').length;
+  const priorBull = priorTrend.filter((s) => s.label === 'HH' || s.label === 'HL').length;
+  let regime;
+  if (bull >= 3) regime = 'Uptrend';
+  else if (bear >= 3) regime = 'Downtrend';
+  else if (posInRange <= 0.35 && priorBear >= priorBull) regime = 'Accumulation';
+  else if (posInRange >= 0.65 && priorBull >= priorBear) regime = 'Distribution';
+  else regime = 'Range';
+  const structureExplain =
+    regime === 'Uptrend' ? 'Higher highs and higher lows — buyers in control.'
+    : regime === 'Downtrend' ? 'Lower highs and lower lows — sellers in control.'
+    : regime === 'Accumulation' ? 'Basing near the lows after weakness — possible accumulation, not yet confirmed.'
+    : regime === 'Distribution' ? 'Stalling near the highs after strength — possible distribution; be cautious.'
+    : 'Choppy, overlapping swings — no clear trend; range conditions.';
+
+  // ---- Volume analysis ----
+  const vN = Math.min(40, data.length);
   const vRecent = data.slice(-vN);
   const avgVol = mean(data.slice(-vN).map((d) => d.v)) || 1;
-  let upVol = 0, dnVol = 0;
-  vRecent.forEach((d) => { if (d.c >= d.o) upVol += d.v; else dnVol += d.v; });
-  const volScore = Math.round(clamp((upVol / (upVol + dnVol || 1)) * 100, 0, 100));
-  const lastVolRatio = data[data.length - 1].v / avgVol;
-  const volLabel = volScore >= 60 ? 'Buyers' : volScore <= 40 ? 'Sellers' : 'Balanced';
+  let upVol = 0, dnVol = 0, buyers = 0, sellers = 0;
+  vRecent.forEach((d) => { if (d.c >= d.o) { upVol += d.v; buyers++; } else { dnVol += d.v; sellers++; } });
+  const buyerPressure = Math.round((upVol / (upVol + dnVol || 1)) * 100);
+  const sellerPressure = 100 - buyerPressure;
+  const relVol = +(data[data.length - 1].v / avgVol).toFixed(2);
+  const volScore = buyerPressure;
+  const volLabel = buyerPressure >= 60 ? 'Buyers' : buyerPressure <= 40 ? 'Sellers' : 'Balanced';
+  const volumeConfirms =
+    (regime === 'Uptrend' || regime === 'Accumulation') ? buyerPressure > 52
+    : (regime === 'Downtrend' || regime === 'Distribution') ? sellerPressure > 52
+    : Math.abs(buyerPressure - 50) > 8;
+  const volumeSummary = `${buyerPressure}% buyer pressure vs ${sellerPressure}% seller pressure over ${vN} days; last bar ${relVol}× average. Volume ${volumeConfirms ? 'confirms' : 'does not confirm'} the ${regime.toLowerCase()}.`;
 
-  // ---- Support / resistance strength (touch count, 0-100) ----
-  const tol = 0.02;
-  const supTouches = lows.filter((i) => Math.abs(data[i].l - support) / support <= tol).length
-    + highs.filter((i) => Math.abs(data[i].h - support) / support <= tol).length;
-  const resTouches = highs.filter((i) => Math.abs(data[i].h - resistance) / resistance <= tol).length
-    + lows.filter((i) => Math.abs(data[i].l - resistance) / resistance <= tol).length;
-  const supStrength = Math.round(clamp((supTouches / 4) * 100, 0, 100));
-  const resStrength = Math.round(clamp((resTouches / 4) * 100, 0, 100));
+  // ---- Support / resistance strength (0-100, multi-factor, capped at 97) ----
+  const levelStrength = (level, kind) => {
+    const tol = 0.02;
+    const touchIdx = [...lows, ...highs].filter((i) => Math.abs((kind === 'sup' ? data[i].l : data[i].h) - level) / level <= tol);
+    const touches = touchIdx.length;
+    const nearVols = data.filter((d) => Math.abs(d.l - level) / level <= tol || Math.abs(d.h - level) / level <= tol).map((d) => d.v);
+    const volRatio = nearVols.length ? mean(nearVols) / avgVol : 0;
+    let bounce = 0, bn = 0;
+    touchIdx.forEach((i) => { const f = data.slice(i + 1, i + 6); if (f.length) { bounce += Math.max(...f.map((d) => Math.abs(d.c - level))) / level; bn++; } });
+    const bounceQ = bn ? bounce / bn : 0;
+    const span = touchIdx.length >= 2 ? (Math.max(...touchIdx) - Math.min(...touchIdx)) / data.length : 0;
+    const sTouch = clamp(touches / 5, 0, 1);
+    const sVol = clamp(volRatio / 1.5, 0, 1);
+    const sBounce = clamp(bounceQ / 0.08, 0, 1);
+    const sSpan = clamp(span, 0, 1);
+    const strength = Math.round(clamp((sTouch * 0.4 + sVol * 0.2 + sBounce * 0.25 + sSpan * 0.15) * 100, 0, 97));
+    return { price: +level.toFixed(1), strength, touches };
+  };
+  const supInfo = levelStrength(support, 'sup');
+  const resInfo = levelStrength(resistance, 'res');
+  const supStrength = supInfo.strength;
+  const resStrength = resInfo.strength;
+  const supTouches = supInfo.touches;
+  const resTouches = resInfo.touches;
 
-  // ---- Backtested hit-rate per signal (rolling, no look-ahead in signal) ----
+  // ---- Backtest (per signal: n, wins, losses, rate, avgReturn, avgDays) ----
   const winRates = backtest(data, 10);
 
+  const eq = (rHi + rLo) / 2;
+  const zone = price > eq ? 'Premium' : 'Discount';
 
-  // multi-day swing — accumulate in a zone near support, target significant levels.
+  // ---- Swing plan (NEPSE T+2, ~10% band) ----
   const entryLow = support;
   const entryHigh = support * 1.03;
-  const entry = support * 1.02; // planning entry = within the buy zone, not today's close
+  const entry = support * 1.02;
   const stop = Math.min(support * 0.96, lastSwingLow != null ? lastSwingLow * 0.99 : support * 0.96);
   const t1 = resistance;
-  let t2 = resistance + (resistance - support); // measured move beyond resistance
-  if (t2 < t1 * 1.04) t2 = t1 * 1.06; // keep T2 a worthwhile distance past T1
+  let t2 = resistance + (resistance - support);
+  if (t2 < t1 * 1.04) t2 = t1 * 1.06;
   const rr = (t1 - entry) / Math.max(entry - stop, 1e-6);
   const holdNote = 'NEPSE settles T+2 — plan as a multi-day swing, not an intraday trade.';
 
-  let signal = "HOLD";
-  if (price > resistance) signal = "BREAKOUT";
-  else if (price < support) signal = "BREAKDOWN";
+  let signal = 'HOLD';
+  if (price > resistance) signal = 'BREAKOUT';
+  else if (price < support) signal = 'BREAKDOWN';
   else {
     const pos = (price - support) / (resistance - support);
-    signal = pos <= 0.25 ? "ACCUMULATE" : pos >= 0.75 ? "TRIM" : "HOLD";
+    signal = pos <= 0.25 ? 'ACCUMULATE' : pos >= 0.75 ? 'TRIM' : 'HOLD';
   }
+  const rsiNow = rsi[rsi.length - 1] ?? 50;
+  const e20Now = e20[e20.length - 1];
+  const e50Now = e50[e50.length - 1];
+
+  // ---- Bias engine (-100..+100) ----
+  const cStruct = structureBias === 'Bullish' ? 30 : structureBias === 'Bearish' ? -30 : 0;
+  const cRsi = clamp((rsiNow - 50) / 50, -1, 1) * 20;
+  const cEma = e20Now > e50Now ? 18 : -18;
+  const cVol = ((buyerPressure - 50) / 50) * 17;
+  const cSR = ((supStrength - resStrength) / 100) * 15;
+  const biasScore = Math.round(clamp(cStruct + cRsi + cEma + cVol + cSR, -100, 100));
+  const bias = biasScore >= 50 ? 'Strong Bullish' : biasScore >= 15 ? 'Bullish' : biasScore > -15 ? 'Neutral' : biasScore > -50 ? 'Bearish' : 'Strong Bearish';
+  const biasExplain = `Structure ${structureBias} (${cStruct >= 0 ? '+' : ''}${cStruct}), RSI ${Math.round(rsiNow)} (${cRsi >= 0 ? '+' : ''}${Math.round(cRsi)}), EMA20${e20Now > e50Now ? '>' : '<'}EMA50 (${cEma >= 0 ? '+' : ''}${cEma}), volume (${cVol >= 0 ? '+' : ''}${Math.round(cVol)}), S/R balance (${cSR >= 0 ? '+' : ''}${Math.round(cSR)}).`;
+
+  // ---- Confidence (0-100) ----
+  const cur = winRates[signal] || { n: 0 };
+  const sSample = clamp(cur.n / 20, 0, 1);
+  const sTrendClarity = clamp(Math.abs(biasScore) / 60, 0, 1);
+  const sVolConf = volumeConfirms ? 1 : clamp(Math.abs(buyerPressure - 50) / 50, 0, 1);
+  const sSRq = clamp((supStrength + resStrength) / 200, 0, 1);
+  const dirs = [structureBias === 'Bullish' ? 1 : structureBias === 'Bearish' ? -1 : 0, rsiNow > 55 ? 1 : rsiNow < 45 ? -1 : 0, e20Now > e50Now ? 1 : -1, buyerPressure > 52 ? 1 : buyerPressure < 48 ? -1 : 0];
+  const net = dirs.reduce((a, b) => a + b, 0);
+  const sAgree = clamp(Math.abs(net) / 4, 0, 1);
+  const confidence = Math.round((sSample * 0.3 + sTrendClarity * 0.25 + sVolConf * 0.15 + sSRq * 0.15 + sAgree * 0.15) * 100);
+  const confidenceLabel = confidence >= 66 ? 'High' : confidence >= 40 ? 'Moderate' : 'Low';
+  const confidenceExplain = `Sample n=${cur.n}, trend clarity ${Math.round(sTrendClarity * 100)}%, volume ${volumeConfirms ? 'confirms' : 'mixed'}, S/R quality ${Math.round(sSRq * 100)}%, ${Math.abs(net)}/4 indicators agree.`;
+
+  // ---- Trade quality (0-100) -> grade ----
+  const sRR = clamp(rr / 3, 0, 1);
+  const sAlign = (biasScore > 10 && (signal === 'ACCUMULATE' || signal === 'BREAKOUT')) ? 1 : biasScore > 0 ? 0.6 : 0.3;
+  const sHist = cur.rate != null ? clamp(cur.rate / 100, 0, 1) * clamp(cur.n / 10, 0.3, 1) : 0.3;
+  const tradeQuality = Math.round((sRR * 0.3 + sAlign * 0.2 + (volumeConfirms ? 1 : 0.4) * 0.15 + clamp(supStrength / 100, 0, 1) * 0.15 + sHist * 0.2) * 100);
+  const grade = tradeQuality >= 85 ? 'A+' : tradeQuality >= 70 ? 'A' : tradeQuality >= 55 ? 'B' : tradeQuality >= 40 ? 'C' : 'Avoid';
+
+  const summary = `${bias} bias with ${confidenceLabel.toLowerCase()} confidence (${regime}). Support ${supStrength >= 60 ? 'is strong' : supStrength >= 35 ? 'is moderate' : 'is weak'}; volume favours ${buyerPressure >= 52 ? 'buyers' : sellerPressure >= 52 ? 'sellers' : 'neither side'}. ${cur.n ? `Similar past setups: ${cur.wins}/${cur.n} reached T1 first (${cur.rate}%, avg ${cur.avgReturn}% in ~${cur.avgDays}d).` : 'Too few similar past setups to judge odds.'}`;
+
+  const report = {
+    bias, biasScore, confidence, confidenceLabel, tradeQuality, grade,
+    marketStructure, trend: regime,
+    support: { price: supInfo.price, strength: supStrength },
+    resistance: { price: resInfo.price, strength: resStrength },
+    volume: { buyers, sellers, buyerPressure, sellerPressure, relVol, confirms: volumeConfirms },
+    historicalPerformance: { wins: cur.wins || 0, losses: cur.losses || 0, matches: cur.n || 0, hitRate: cur.rate, avgReturn: cur.avgReturn, avgDays: cur.avgDays },
+    summary,
+  };
 
   return {
     e20, e50, rsi, highs, lows, support, resistance, PP, R1, S1, R2, S2,
-    trend, structure, ob, fvg, eq, zone, entry, entryLow, entryHigh, stop, t1, t2, rr, holdNote, price, signal,
-    swingLabels, recentLabels, structureBias, volScore, volLabel, lastVolRatio, supStrength, resStrength,
-    supTouches, resTouches, winRates,
-    rsiNow: rsi[rsi.length - 1], e20Now: e20[e20.length - 1], e50Now: e50[e50.length - 1],
+    trend, regime, structure, ob, fvg, eq, zone, entry, entryLow, entryHigh, stop, t1, t2, rr, holdNote, price, signal,
+    swingLabels, recentLabels, marketStructure, structureBias, structureExplain,
+    volScore, volLabel, buyers, sellers, buyerPressure, sellerPressure, relVol, volumeConfirms, volumeSummary,
+    supStrength, resStrength, supTouches, resTouches, supInfo, resInfo,
+    winRates, bias, biasScore, biasExplain, confidence, confidenceLabel, confidenceExplain,
+    tradeQuality, grade, summary, report,
+    rsiNow, e20Now, e50Now,
   };
 }
 
@@ -171,9 +260,9 @@ export function analyze(data) {
 // then look forward `horizon` candles to see if price reached T1 (resistance)
 // before SL (support*0.96). In-sample & descriptive — NOT a prediction.
 export function backtest(data, horizon = 10) {
+  const mk = () => ({ n: 0, w: 0, l: 0, retSum: 0, daySum: 0 });
   const tally = {
-    ACCUMULATE: { n: 0, w: 0 }, HOLD: { n: 0, w: 0 }, TRIM: { n: 0, w: 0 },
-    BREAKOUT: { n: 0, w: 0 }, BREAKDOWN: { n: 0, w: 0 },
+    ACCUMULATE: mk(), HOLD: mk(), TRIM: mk(), BREAKOUT: mk(), BREAKDOWN: mk(),
   };
   for (let i = 40; i < data.length - 1; i++) {
     const win = data.slice(Math.max(0, i - 119), i + 1);
@@ -189,14 +278,25 @@ export function backtest(data, horizon = 10) {
     else if (price < sup) sig = 'BREAKDOWN';
     else { const pos = (price - sup) / (rst - sup || 1); sig = pos <= 0.25 ? 'ACCUMULATE' : pos >= 0.75 ? 'TRIM' : 'HOLD'; }
     const t1 = rst, sl = sup * 0.96;
-    let outcome = null;
+    let outcome = null, days = 0;
     for (let k = i + 1; k <= Math.min(data.length - 1, i + horizon); k++) {
+      days = k - i;
       if (data[k].h >= t1) { outcome = 'win'; break; }
       if (data[k].l <= sl) { outcome = 'loss'; break; }
     }
-    if (outcome) { tally[sig].n++; if (outcome === 'win') tally[sig].w++; }
+    if (outcome) {
+      const t = tally[sig];
+      t.n++;
+      if (outcome === 'win') { t.w++; t.retSum += ((t1 - price) / price) * 100; t.daySum += days; }
+      else { t.l++; t.retSum += ((sl - price) / price) * 100; t.daySum += days; }
+    }
   }
   const out = {};
-  for (const k of Object.keys(tally)) out[k] = tally[k].n ? { n: tally[k].n, rate: Math.round((tally[k].w / tally[k].n) * 100) } : { n: 0, rate: null };
+  for (const k of Object.keys(tally)) {
+    const t = tally[k];
+    out[k] = t.n
+      ? { n: t.n, wins: t.w, losses: t.l, rate: Math.round((t.w / t.n) * 100), avgReturn: +(t.retSum / t.n).toFixed(1), avgDays: +(t.daySum / t.n).toFixed(1) }
+      : { n: 0, wins: 0, losses: 0, rate: null, avgReturn: null, avgDays: null };
+  }
   return out;
 }
