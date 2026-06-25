@@ -82,6 +82,61 @@ function pctChange(candles, price) {
   return prev ? ((price - prev) / prev) * 100 : null;
 }
 
+// Descriptive "setup quality" score used ONLY for ordering a research shortlist.
+// NOT a buy recommendation — it deliberately rewards proven out-of-sample edge,
+// liquidity and confirmation, and penalises unproven/illiquid/bearish setups.
+export function screenScore(a) {
+  if (!a) return -999;
+  let s = a.tradeQuality || 0;
+  const wf = a.report?.walkForward;
+  if (wf && wf.oosN >= 8 && wf.oosExp > 0) s += 15;
+  if (wf && /holds/.test(wf.verdict)) s += 10;
+  if (a.relStrength != null && a.relStrength > 0) s += 8;
+  const act = a.action?.label;
+  s += act === 'Strong Buy' ? 10 : act === 'Buy' ? 6 : act === 'Watch' ? 2 : act === 'Avoid' ? -12 : 0;
+  s += a.liquidity === 'Liquid' ? 5 : a.liquidity === 'Moderate' ? 2 : a.liquidity === 'Thin' ? -6 : -20;
+  if ((a.report?.historicalPerformance?.matches || 0) < 10) s -= 10;
+  return Math.round(s);
+}
+
+// Screen one or more sectors. `sectors` is an array of keyword strings matched
+// case-insensitively against each stock's sector (e.g. ['hydro'], ['micro']).
+// Heavy: fetches candles for every matching symbol with a small concurrency pool.
+export async function screenSectors(sectors, onProgress) {
+  const cookie = await getCookie();
+  if (!cookie) return { error: 'Set your Chukul cookie in the Chart tab or Settings first.', results: [] };
+  const list = await fetchStockList(cookie);
+  const keys = sectors.map((s) => s.toLowerCase());
+  const universe = list.filter((s) => s.sector && keys.some((k) => String(s.sector).toLowerCase().includes(k)));
+  if (!universe.length) return { error: 'No stocks matched those sectors in the Chukul list.', results: [], total: 0 };
+
+  let benchmark = null;
+  try { const ic = await fetchCandles('NEPSE', cookie); if (ic.length >= 60) benchmark = ic; } catch (e) { /* RS optional */ }
+
+  const results = [];
+  let done = 0;
+  const total = universe.length;
+  const CONC = 4;
+  let idx = 0;
+  async function worker() {
+    while (idx < universe.length) {
+      const mine = universe[idx++];
+      try {
+        const candles = await fetchCandles(mine.symbol, cookie);
+        if (candles.length >= 40) {
+          const a = analyze(candles, { benchmark });
+          if (a) results.push({ symbol: mine.symbol, name: mine.name, sector: mine.sector, a, score: screenScore(a) });
+        }
+      } catch (e) { /* skip symbol */ }
+      done++;
+      if (onProgress) onProgress(done, total);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONC, universe.length) }, worker));
+  results.sort((x, y) => y.score - x.score);
+  return { results, total, error: '' };
+}
+
 export async function loadAnalysis() {
   const cookie = await getCookie();
   const [watchlist, indexBand] = await Promise.all([getWatchlist(), getIndexBand()]);

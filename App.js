@@ -30,12 +30,13 @@ import {
 } from './src/data';
 import { rankStocks, compositeScore, computeSignal, SIGNAL_META } from './src/signals';
 import ChartScreen from './src/chart';
-import { getCookie, setCookie, fetchStockList, fetchCandles, loadAnalysis } from './src/chukul';
+import { getCookie, setCookie, fetchStockList, fetchCandles, loadAnalysis, screenSectors } from './src/chukul';
 import { analyze } from './src/analysis';
 import { BandGauge, GaugeLabels, SignalBadge, ScoreBar, fmt } from './src/components';
 
 export default function App() {
-  const [tab, setTab] = useState('picks'); // picks | watch | market | settings
+  const [tab, setTab] = useState('picks'); // picks | watch | screen | chart | settings
+  const [chartSymbol, setChartSymbol] = useState(null);
   const [selected, setSelected] = useState(null);
   const [editing, setEditing] = useState(null); // holding being added/edited
   const [query, setQuery] = useState('');
@@ -180,7 +181,10 @@ export default function App() {
             <Market movers={movers} live={data.live} refreshing={refreshing} onRefresh={onRefresh} />
           )}
           {tab === 'settings' && <Settings data={data} onSaved={refresh} />}
-          {tab === 'chart' && <ChartScreen />}
+          {tab === 'screen' && (
+            <SectorScreen onOpen={(sym) => { setChartSymbol(sym); setTab('chart'); }} />
+          )}
+          {tab === 'chart' && <ChartScreen initialSymbol={chartSymbol} />}
           <TabBar tab={tab} setTab={setTab} watchCount={ranked.length} />
         </>
       )}
@@ -761,12 +765,115 @@ function Field({ label, value, onChange, numeric, caps }) {
   );
 }
 
+// ---- Sector screen (research shortlist of entry-valid setups) ---------------
+function SectorScreen({ onOpen }) {
+  const [sectors, setSectors] = useState({ hydro: true, micro: true });
+  const [state, setState] = useState({ loading: false, results: null, err: '', progress: null, total: 0 });
+  const [showAll, setShowAll] = useState(false);
+
+  const run = async () => {
+    const keys = [];
+    if (sectors.hydro) keys.push('hydro');
+    if (sectors.micro) keys.push('micro');
+    if (!keys.length) { setState((s) => ({ ...s, err: 'Pick at least one sector.' })); return; }
+    setState({ loading: true, results: null, err: '', progress: 0, total: 0 });
+    try {
+      const out = await screenSectors(keys, (done, total) => setState((s) => ({ ...s, progress: done, total })));
+      setState({ loading: false, results: out.results || [], err: out.error || '', progress: null, total: out.total || 0 });
+    } catch (e) {
+      setState({ loading: false, results: null, err: String(e.message || e), progress: null, total: 0 });
+    }
+  };
+
+  const all = state.results || [];
+  const buyable = all.filter((r) => r.a.action.label === 'Buy' || r.a.action.label === 'Strong Buy').slice(0, 5);
+  const nearEntry = all.filter((r) => r.a.action.label === 'Watch').slice(0, 5);
+
+  const Chip = ({ k, label }) => (
+    <TouchableOpacity onPress={() => setSectors((s) => ({ ...s, [k]: !s[k] }))}
+      style={{ flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center', marginRight: k === 'hydro' ? 8 : 0,
+        backgroundColor: sectors[k] ? C.accent : C.card, borderWidth: 1, borderColor: sectors[k] ? C.accent : C.border }}>
+      <Text style={{ color: sectors[k] ? '#06121F' : C.textDim, fontWeight: '800', fontSize: 13 }}>{label}</Text>
+    </TouchableOpacity>
+  );
+
+  const Card = ({ r, idx }) => {
+    const a = r.a;
+    const col = a.action.label === 'Strong Buy' ? C.good : a.action.label === 'Buy' ? '#2E9E6B' : a.action.label === 'Watch' ? C.gold : C.bad;
+    return (
+      <TouchableOpacity onPress={() => onOpen(r.symbol)} style={{ backgroundColor: C.card, borderRadius: 12, padding: 12, marginTop: 10, borderWidth: 1, borderColor: C.border }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={{ color: C.text, fontWeight: '900', fontSize: 16 }}>{idx != null ? idx + '. ' : ''}{r.symbol}</Text>
+          <Text style={{ color: col, fontWeight: '900', fontSize: 13 }}>{a.action.label.toUpperCase()}</Text>
+        </View>
+        <Text style={{ color: C.textFaint, fontSize: 11, marginTop: 1 }}>{r.sector}</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 }}>
+          {[`Now ${fmt(a.price)}`, `Entry ${fmt(a.riskPlan.entry)}`, `Stop ${fmt(a.riskPlan.stop)}`, `T1 ${fmt(a.riskPlan.t1)}`, `R:R 1:${a.rr.toFixed(1)}`].map((t, i) => (
+            <Text key={i} style={{ color: C.textDim, fontSize: 11.5, marginRight: 12, marginBottom: 3 }}>{t}</Text>
+          ))}
+        </View>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 4 }}>
+          <Text style={{ color: a.tradeQuality >= 55 ? C.good : C.gold, fontSize: 11.5, marginRight: 12 }}>Quality {a.tradeQuality}/100</Text>
+          <Text style={{ color: a.liquidity === 'Liquid' ? C.good : a.liquidity === 'Moderate' ? C.gold : C.bad, fontSize: 11.5, marginRight: 12 }}>{a.liquidity}</Text>
+          {a.relStrength != null ? <Text style={{ color: a.relStrength > 0 ? C.good : C.bad, fontSize: 11.5, marginRight: 12 }}>RS {a.relStrength > 0 ? '+' : ''}{a.relStrength}pp</Text> : null}
+          <Text style={{ color: /holds/.test(a.report.walkForward.verdict) ? C.good : /collapses|noise/.test(a.report.walkForward.verdict) ? C.bad : C.textFaint, fontSize: 11.5 }}>OOS: {a.report.walkForward.verdict}</Text>
+        </View>
+        <Text style={{ color: C.textFaint, fontSize: 11, marginTop: 6 }}>Tap to open full report →</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <ScrollView style={styles.body} contentContainerStyle={{ paddingBottom: 90 }}>
+      <Text style={styles.sectionTitle}>Sector screen</Text>
+      <Text style={[styles.sub, { marginTop: 4, marginBottom: 12 }]}>Scans every hydropower / microfinance stock on Chukul and lists only the ones the engine currently flags as a valid buy-entry. A research shortlist — not buy advice.</Text>
+
+      <View style={{ flexDirection: 'row', marginBottom: 10 }}>
+        <Chip k="hydro" label="Hydropower" />
+        <Chip k="micro" label="Microfinance" />
+      </View>
+      <TouchableOpacity onPress={run} disabled={state.loading} style={[styles.primaryBtn, { opacity: state.loading ? 0.6 : 1 }]}>
+        <Text style={styles.primaryBtnTxt}>{state.loading ? `Scanning ${state.progress ?? 0}/${state.total || '…'}` : 'Run screen'}</Text>
+      </TouchableOpacity>
+
+      {state.loading && <ActivityIndicator color={C.accent} style={{ marginTop: 14 }} />}
+      {state.err ? <Text style={[styles.bannerTxt, { marginTop: 12 }]}>{state.err}</Text> : null}
+
+      {state.results && !state.loading ? (
+        <>
+          <Text style={{ color: C.textDim, fontSize: 12, marginTop: 16, marginBottom: 2 }}>Scanned {state.total} stocks · {buyable.length} currently entry-valid</Text>
+
+          {buyable.length === 0 ? (
+            <View style={{ backgroundColor: C.card, borderRadius: 12, padding: 14, marginTop: 8, borderWidth: 1, borderColor: C.border }}>
+              <Text style={{ color: C.gold, fontWeight: '800', fontSize: 14 }}>No buy-entry setups right now</Text>
+              <Text style={{ color: C.textDim, fontSize: 12.5, marginTop: 4 }}>None of the scanned names are in a confirmed entry today. That’s a normal, honest outcome — most days, thin sectors have nothing actionable. See near-entry Watch names below, or check back after the next session.</Text>
+            </View>
+          ) : (
+            <>
+              <Text style={{ color: C.good, fontWeight: '900', fontSize: 13, marginTop: 6 }}>ENTRY-VALID NOW (top {buyable.length})</Text>
+              {buyable.map((r, i) => <Card key={r.symbol} r={r} idx={i + 1} />)}
+            </>
+          )}
+
+          <TouchableOpacity onPress={() => setShowAll((v) => !v)} style={{ marginTop: 16 }}>
+            <Text style={{ color: C.accent, fontWeight: '700', fontSize: 13 }}>{showAll ? '▲ Hide' : '▼ Show'} near-entry (Watch) — {nearEntry.length}</Text>
+          </TouchableOpacity>
+          {showAll ? (nearEntry.length ? nearEntry.map((r) => <Card key={r.symbol} r={r} idx={null} />) : <Text style={[styles.sub, { marginTop: 8 }]}>No Watch-stage setups either.</Text>) : null}
+
+          <Text style={[styles.sub, { marginTop: 16 }]}>Ranking is descriptive (setup quality, out-of-sample edge, liquidity, relative strength) — it is not a prediction or a recommendation. NEPSE is thin and moves on news/liquidity, not chart structure. Verify each name yourself and size with the risk plan inside its report. Not financial advice.</Text>
+        </>
+      ) : null}
+    </ScrollView>
+  );
+}
+
 // ---- Tab bar ----------------------------------------------------------------
 function TabBar({ tab, setTab, watchCount }) {
   return (
     <View style={styles.tabBar}>
       <TabButton active={tab === 'picks'} label="Picks" onPress={() => setTab('picks')} />
       <TabButton active={tab === 'watch'} label={`Watch (${watchCount})`} onPress={() => setTab('watch')} />
+      <TabButton active={tab === 'screen'} label="Screen" onPress={() => setTab('screen')} />
       <TabButton active={tab === 'chart'} label="Chart" onPress={() => setTab('chart')} />
       <TabButton active={tab === 'settings'} label="Settings" onPress={() => setTab('settings')} />
     </View>

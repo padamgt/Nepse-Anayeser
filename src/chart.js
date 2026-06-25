@@ -190,7 +190,7 @@ function ChartView({ data, A, show, zoom = 1 }) {
 }
 
 // ---- Full screen: cookie -> picker -> candles -> chart ----
-export default function ChartScreen() {
+export default function ChartScreen({ initialSymbol = null }) {
   const [cookie, setCk] = useState(null);
   const [cookieInput, setCookieInput] = useState('');
   const [list, setList] = useState([]);
@@ -251,6 +251,12 @@ export default function ChartScreen() {
   };
 
   const A = useMemo(() => (data ? analyze(data, { benchmark: bench }) : null), [data, bench]);
+
+  // Open a symbol handed in from another tab (e.g. the Screen tab).
+  useEffect(() => {
+    if (initialSymbol && cookie && initialSymbol !== sel) pick(initialSymbol);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSymbol, cookie]);
 
   const scanWatch = useCallback(async () => {
     setScan({ loading: true, results: null, err: '' });
