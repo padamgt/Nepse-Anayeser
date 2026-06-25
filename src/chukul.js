@@ -45,7 +45,7 @@ export async function fetchStockList(cookie) {
   const arr = Array.isArray(data) ? data : data.results || data.data || [];
   return arr
     .filter((s) => s && s.symbol && !s.is_delisted && !s.is_merged)
-    .map((s) => ({ symbol: String(s.symbol).toUpperCase(), name: s.name || s.symbol, sector: s.sector }))
+    .map((s) => ({ symbol: String(s.symbol).toUpperCase(), name: s.name || s.symbol, sector: s.sector ?? s.sector_id ?? s.sectorId ?? s.sector_code ?? s.sectorCode ?? null }))
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
 
@@ -106,12 +106,25 @@ export async function screenSectors(sectors, onProgress) {
   const cookie = await getCookie();
   if (!cookie) return { error: 'Set your Chukul cookie in the Chart tab or Settings first.', results: [] };
   const list = await fetchStockList(cookie);
-  const keys = sectors.map((s) => s.toLowerCase());
-  const universe = list.filter((s) => s.sector && keys.some((k) => String(s.sector).toLowerCase().includes(k)));
+  // Chukul tags each stock with a numeric sector code. Hydropower = 5, Microfinance = 9.
+  // Keep keyword fallbacks in case a payload ever uses text labels instead.
+  const GROUPS = {
+    hydro: { codes: ['5'], kw: ['hydro'] },
+    micro: { codes: ['9'], kw: ['micro', 'laghubitta'] },
+  };
+  const wanted = sectors.map((s) => GROUPS[String(s).toLowerCase()]).filter(Boolean);
+  const codeSet = new Set(wanted.flatMap((g) => g.codes));
+  const kws = wanted.flatMap((g) => g.kw);
+  const matchSector = (sec) => {
+    if (sec == null) return false;
+    if (codeSet.has(String(sec).trim())) return true;
+    const str = String(sec).toLowerCase();
+    return kws.some((k) => str.includes(k));
+  };
+  const universe = list.filter((s) => matchSector(s.sector));
   if (!universe.length) {
-    // Fallback: some Chukul payloads omit/encode sector — surface what sectors DO exist so we can fix the filter.
-    const seen = Array.from(new Set(list.map((s) => s.sector).filter(Boolean))).slice(0, 12);
-    return { error: `No stocks matched those sectors. Sector labels seen in Chukul: ${seen.join(', ') || '(none — sector field missing)'}`, results: [], total: 0, sectorsSeen: seen };
+    const seen = Array.from(new Set(list.map((s) => s.sector).filter((x) => x != null))).slice(0, 20);
+    return { error: `No stocks matched sector codes ${[...codeSet].join(', ') || '(none)'}. Sector values seen: ${seen.join(', ') || '(sector field missing)'}`, results: [], total: 0, sectorsSeen: seen };
   }
   if (onProgress) onProgress(0, universe.length); // show the total right away
 
