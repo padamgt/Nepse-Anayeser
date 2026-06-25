@@ -771,9 +771,9 @@ const SECTOR_DEFS = [
   { key: 'micro', label: 'Microfinance', color: '#2EC27E' },
   { key: 'life', label: 'Life Insurance', color: '#9B7BFF' },
   { key: 'nonlife', label: 'Non-life Insurance', color: '#FF8A5B' },
-  { key: 'pharma', label: 'Pharmaceutical', color: '#FF5C8A' },
+  { key: 'manuf', label: 'Manufacturing', color: '#FF5C8A' },
 ];
-const SECTOR_NAME = { '5': 'Hydropower', '7': 'Life Insurance', '8': 'Pharmaceutical', '9': 'Microfinance', '11': 'Non-life Insurance' };
+const SECTOR_NAME = { '5': 'Hydropower', '7': 'Life Insurance', '8': 'Manufacturing', '9': 'Microfinance', '11': 'Non-life Insurance' };
 const ALL_KEYS = SECTOR_DEFS.map((d) => d.key);
 
 function agoLabel(ts) {
@@ -788,10 +788,9 @@ function agoLabel(ts) {
 }
 
 function SectorScreen({ onOpen }) {
-  const [sectors, setSectors] = useState({ hydro: true, micro: false, life: false, nonlife: false, pharma: false });
+  const [sectors, setSectors] = useState({ hydro: true, micro: false, life: false, nonlife: false, manuf: false });
   const [state, setState] = useState({ loading: false, results: null, err: '', progress: null, total: 0, savedAt: null, sectorsScanned: [] });
   const [showAll, setShowAll] = useState(false);
-  const touched = useRef(false);   // true only after the user changes a sector
   const tokenRef = useRef(0);      // supersede stale/in-flight scans
 
   // Restore the last scan so results persist across tab switches / restarts.
@@ -802,18 +801,8 @@ function SectorScreen({ onOpen }) {
     });
   }, []);
 
-  // Auto-scan shortly after the user finishes changing the sector selection.
-  useEffect(() => {
-    if (!touched.current) return;          // ignore mount + cache restore
-    const keys = ALL_KEYS.filter((k) => sectors[k]);
-    if (!keys.length) return;              // nothing selected → keep last results
-    const id = setTimeout(() => run(keys), 700);
-    return () => clearTimeout(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sectors]);
-
-  const toggle = (k) => { touched.current = true; setSectors((s) => ({ ...s, [k]: !s[k] })); };
-  const setAll = (v) => { touched.current = true; setSectors(Object.fromEntries(ALL_KEYS.map((k) => [k, v]))); };
+  const toggle = (k) => setSectors((s) => ({ ...s, [k]: !s[k] }));
+  const setAll = (v) => setSectors(Object.fromEntries(ALL_KEYS.map((k) => [k, v])));
 
   // Keep only the fields the screen UI needs, so storage stays small.
   const trimA = (a) => ({
@@ -884,7 +873,7 @@ function SectorScreen({ onOpen }) {
   return (
     <ScrollView style={styles.body} contentContainerStyle={{ paddingBottom: 90 }}>
       <Text style={styles.sectionTitle}>Sector screen</Text>
-      <Text style={[styles.sub, { marginTop: 4, marginBottom: 12 }]}>Tap sectors to scan automatically (Strong Buy → Buy → Watch). A research shortlist — not buy advice.</Text>
+      <Text style={[styles.sub, { marginTop: 4, marginBottom: 12 }]}>Pick sectors, then tap Run screen. Lists actionable names, ordered Strong Buy → Buy → Watch. A research shortlist — not buy advice.</Text>
 
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <Text style={{ color: C.textDim, fontSize: 12, fontWeight: '800', letterSpacing: 0.5 }}>SECTORS</Text>
@@ -912,7 +901,7 @@ function SectorScreen({ onOpen }) {
         })}
       </View>
       <TouchableOpacity onPress={run} disabled={state.loading} style={[styles.primaryBtn, { opacity: state.loading ? 0.6 : 1 }]}>
-        <Text style={styles.primaryBtnTxt}>{state.loading ? `Scanning ${state.progress ?? 0}/${state.total || '…'}` : 'Rescan now'}</Text>
+        <Text style={styles.primaryBtnTxt}>{state.loading ? `Scanning ${state.progress ?? 0}/${state.total || '…'}` : 'Run screen'}</Text>
       </TouchableOpacity>
 
       {state.loading ? (
