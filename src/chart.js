@@ -89,8 +89,12 @@ function ActionCard({ A }) {
         ))}
       </View>
       <View style={{ marginTop: 10, backgroundColor: C.bg, borderRadius: 8, padding: 9 }}>
-        <Text style={{ color: C.textDim, fontSize: 11, fontWeight: '700', letterSpacing: 0.5 }}>TRIGGER</Text>
-        <Text style={{ color: C.text, fontSize: 13.5, fontWeight: '700', marginTop: 2 }}>{A.action.trigger}</Text>
+        <Text style={{ color: C.textDim, fontSize: 11, fontWeight: '700', letterSpacing: 0.5 }}>
+          {A.action.triggerType === 'manage' ? 'POSITION' : A.action.triggerMet ? 'STATUS' : 'TRIGGER (pending)'}
+        </Text>
+        <Text style={{ color: A.action.triggerMet ? C.good : C.text, fontSize: 13.5, fontWeight: '700', marginTop: 2 }}>
+          {A.action.triggerMet && A.action.triggerType !== 'manage' ? '✓ ' : ''}{A.action.trigger}
+        </Text>
       </View>
     </View>
   );
@@ -200,9 +204,16 @@ export default function ChartScreen() {
   const [scan, setScan] = useState({ loading: false, results: null, err: '' });
   const [zoom, setZoom] = useState(1);
   const [showCalc, setShowCalc] = useState(false);
+  const [bench, setBench] = useState(null);
   const hRef = useRef(null);
 
   useEffect(() => { getCookie().then((c) => { setCk(c); setCookieInput(c); }); }, []);
+
+  // Load NEPSE index once for relative-strength benchmarking.
+  useEffect(() => {
+    if (!cookie) return;
+    fetchCandles('NEPSE', cookie).then((c) => { if (c && c.length >= 60) setBench(c); }).catch(() => {});
+  }, [cookie]);
 
   const loadList = useCallback(async (ck) => {
     setListErr('');
@@ -227,7 +238,7 @@ export default function ChartScreen() {
       setData(candles);
       // Journal: log this searched stock's signal and score any open entries for it.
       try {
-        const a = analyze(candles);
+        const a = analyze(candles, { benchmark: bench });
         if (a) {
           const journal = await loadJournal();
           let changed = evaluateInto(journal, symbol, candles);
@@ -239,7 +250,7 @@ export default function ChartScreen() {
     finally { setLoading(false); }
   };
 
-  const A = useMemo(() => (data ? analyze(data) : null), [data]);
+  const A = useMemo(() => (data ? analyze(data, { benchmark: bench }) : null), [data, bench]);
 
   const scanWatch = useCallback(async () => {
     setScan({ loading: true, results: null, err: '' });
@@ -250,7 +261,7 @@ export default function ChartScreen() {
         try {
           const candles = await fetchCandles(w.symbol, cookie);
           if (candles.length >= 20) {
-            const a = analyze(candles);
+            const a = analyze(candles, { benchmark: bench });
             if (a) out.push({ symbol: w.symbol, a });
           }
         } catch (e) { /* skip this symbol */ }
@@ -321,6 +332,12 @@ export default function ChartScreen() {
           {scan.loading && <ActivityIndicator color={C.accent} style={{ marginTop: 10 }} />}
           {scan.err ? <Text style={styles.errTxt}>{scan.err}</Text> : null}
           {scan.results && scan.results.length === 0 && <Text style={styles.hint}>No watchlist stocks are in an Accumulate zone right now.</Text>}
+          {scan.results && scan.results.length > 0 ? (
+            <View style={{ marginTop: 8, backgroundColor: C.bg, borderRadius: 8, padding: 9, borderLeftWidth: 3, borderLeftColor: C.gold }}>
+              <Text style={{ color: C.gold, fontSize: 12, fontWeight: '800' }}>Scanning inflates false positives</Text>
+              <Text style={{ color: C.textDim, fontSize: 11.5, marginTop: 3 }}>You’re testing many names at once, so some will look good by chance alone. Don’t treat the best-looking card as “the pick” — open each, check its walk-forward and liquidity, and demand a real out-of-sample edge before acting.</Text>
+            </View>
+          ) : null}
           {scan.results && scan.results.map(({ symbol, a }) => (
             <TouchableOpacity key={symbol} style={styles.setup} onPress={() => pick(symbol)}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -463,25 +480,66 @@ export default function ChartScreen() {
               Confidence <Text style={{ color: A.confidence >= 66 ? C.good : A.confidence >= 40 ? C.gold : C.bad, fontWeight: '800' }}>{A.confidenceLabel} ({A.confidence})</Text>
               <Text style={{ color: C.textFaint }}>  — how reliable this read is, not its direction</Text>
             </Text>
+            {A.confidenceCapNote ? <Text style={[styles.disc, { marginTop: 4, color: C.gold }]}>⚠ {A.confidenceCapNote}</Text> : null}
             <Text style={[styles.disc, { marginTop: 6 }]}>{A.summary}</Text>
           </View>
 
-          {/* ===== MARKET STRUCTURE (+ accumulation note) ===== */}
+          {/* ===== TREND HIERARCHY (primary / state / momentum) ===== */}
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Market structure · {A.regime}</Text>
-            <Text style={{ color: C.text, fontSize: 16, fontWeight: '800', marginTop: 2 }}>{A.marketStructure}</Text>
-            <Text style={[styles.hint, { marginTop: 6 }]}>{A.structureExplain}</Text>
-            {A.regime === 'Accumulation' && A.currentCondition === 'Bearish' ? (
+            <Text style={styles.cardTitle}>Trend</Text>
+            <Text style={{ color: C.text, fontSize: 16, fontWeight: '900', marginTop: 2 }}>{A.trendState}</Text>
+            <View style={{ flexDirection: 'row', marginTop: 10 }}>
+              {[{ k: 'Primary trend', v: A.primaryTrend, c: A.primaryTrend.includes('Up') ? C.good : A.primaryTrend.includes('Down') ? C.bad : C.gold },
+                { k: 'Current state', v: A.currentState, c: /up|Base|Breakout/.test(A.currentState) ? C.good : /down|Roll|Top|Breakdown/.test(A.currentState) ? C.bad : C.textDim },
+                { k: 'Momentum', v: A.momentum, c: A.momentum === 'Rising' ? C.good : A.momentum === 'Falling' ? C.bad : C.textDim }].map((x, i) => (
+                <View key={i} style={{ flex: 1, paddingRight: 6 }}>
+                  <Text style={{ color: C.textFaint, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.3 }}>{x.k.toUpperCase()}</Text>
+                  <Text style={{ color: x.c, fontSize: 12.5, fontWeight: '800', marginTop: 2 }}>{x.v}</Text>
+                </View>
+              ))}
+            </View>
+            <Text style={{ color: C.textFaint, fontSize: 11.5, marginTop: 10 }}>Structure: {A.marketStructure}</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 }}>
+              {[{ t: `Weekly: ${A.weeklyTrend}`, c: A.weeklyTrend === 'Uptrend' ? C.good : A.weeklyTrend === 'Downtrend' ? C.bad : C.textDim },
+                { t: `Liquidity: ${A.liquidity}`, c: A.liquidity === 'Liquid' ? C.good : A.liquidity === 'Moderate' ? C.gold : C.bad },
+                ...(A.relStrength != null ? [{ t: `RS vs index ${A.relStrength > 0 ? '+' : ''}${A.relStrength}pp`, c: A.relStrength > 0 ? C.good : C.bad }] : [])].map((chip, i) => (
+                <View key={i} style={{ backgroundColor: C.bg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, marginRight: 6, marginBottom: 6, borderWidth: StyleSheet.hairlineWidth, borderColor: chip.c }}>
+                  <Text style={{ color: chip.c, fontSize: 11, fontWeight: '700' }}>{chip.t}</Text>
+                </View>
+              ))}
+            </View>
+            <Text style={[styles.hint, { marginTop: 4 }]}>{A.structureExplain}</Text>
+            {A.primaryTrend.includes('Down') && /up|Base/.test(A.currentState) ? (
               <View style={{ marginTop: 8, backgroundColor: C.bg, borderRadius: 8, padding: 9, borderLeftWidth: 3, borderLeftColor: C.gold }}>
-                <Text style={{ color: C.gold, fontSize: 12.5, fontWeight: '800' }}>Accumulation ≠ bullish yet</Text>
-                <Text style={{ color: C.textDim, fontSize: 12, marginTop: 3 }}>
-                  Basing is forming near the lows, but the trend is still bearish and the reversal is <Text style={{ fontWeight: '800' }}>not confirmed</Text>. Accumulation happens during downtrends — it only turns bullish once price confirms (e.g. {A.action.trigger.toLowerCase()}).
-                </Text>
+                <Text style={{ color: C.gold, fontSize: 12.5, fontWeight: '800' }}>Why both can be true</Text>
+                <Text style={{ color: C.textDim, fontSize: 12, marginTop: 3 }}>The primary trend (slow, EMA-based) is still down, while the latest swings (fast) are attempting to turn up. The turn isn’t a new uptrend until price confirms — that’s what the trigger watches for.</Text>
               </View>
             ) : null}
           </View>
 
-          {/* ===== SUPPORT / RESISTANCE (labelled, honest) ===== */}
+          {/* ===== RISK PLAN (ATR-based stop + position sizing) ===== */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Risk plan</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 }}>
+              {[{ k: 'Entry', v: fmt(A.riskPlan.entry) }, { k: 'Stop', v: fmt(A.riskPlan.stop) },
+                { k: 'Target 1', v: fmt(A.riskPlan.t1) }, { k: 'Target 2', v: fmt(A.riskPlan.t2) },
+                { k: 'Risk / share', v: `${fmt(A.riskPlan.riskPerShare)} (${A.riskPlan.riskPct}%)` },
+                { k: 'ATR', v: `${fmt(A.riskPlan.atr)} (${A.riskPlan.atrPct}%)` }].map((x, i) => (
+                <View key={i} style={{ width: '50%', marginBottom: 8 }}>
+                  <Text style={{ color: C.textFaint, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.3 }}>{x.k.toUpperCase()}</Text>
+                  <Text style={{ color: C.text, fontSize: 14, fontWeight: '800', marginTop: 1 }}>{x.v}</Text>
+                </View>
+              ))}
+            </View>
+            <View style={{ backgroundColor: C.bg, borderRadius: 8, padding: 9, marginTop: 2 }}>
+              <Text style={{ color: C.text, fontSize: 12.5 }}>
+                Risking <Text style={{ fontWeight: '800' }}>1% of NPR 100,000</Text> → about <Text style={{ color: C.accent, fontWeight: '900' }}>{A.riskPlan.sharesPer100k}</Text> shares. Stop is the wider of a 1.5×ATR distance and the structure break, so volatile names get room and tight names aren’t over-risked.
+              </Text>
+            </View>
+            {A.liquidity === 'Illiquid' || A.liquidity === 'Thin' ? (
+              <Text style={[styles.disc, { marginTop: 8, color: C.bad }]}>⚠ {A.liquidityNote}</Text>
+            ) : null}
+          </View>
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Support / resistance</Text>
             {[{ tag: 'Support', info: A.supInfo, str: A.supStrength, t: A.supTouches, word: A.supWord, conf: A.supConfirmed, color: C.good },
@@ -547,7 +605,24 @@ export default function ChartScreen() {
                     ? `Edge: even the low end of the confidence range (${A.report.historicalPerformance.ci.low}%) beats the ${A.report.historicalPerformance.breakevenWR}% breakeven for this R:R.`
                     : `No proven edge yet: the ${A.report.historicalPerformance.breakevenWR}% breakeven sits inside the confidence range (${A.report.historicalPerformance.ci ? A.report.historicalPerformance.ci.low + '–' + A.report.historicalPerformance.ci.high + '%' : '—'}).`}
                 </Text>
-                <Text style={[styles.disc, { marginTop: 8 }]}>In-sample backtest on this stock’s recent candles — describes the past, not a prediction. {A.report.historicalPerformance.unresolved > 0 ? `${A.report.historicalPerformance.unresolved} setup(s) didn’t resolve in 10 days. ` : ''}n={A.report.historicalPerformance.matches}{A.report.historicalPerformance.matches < 20 ? ', below the 20 needed for a reliable read' : ''}. The real test is the Live track record on the Picks tab. Tap ⓘ for formulas.</Text>
+                <Text style={[styles.disc, { marginTop: 8 }]}>Backtest is NET of ~{0.9}% round-trip cost; describes the past, not a prediction. {A.report.historicalPerformance.unresolved > 0 ? `${A.report.historicalPerformance.unresolved} setup(s) didn’t resolve in 10 days. ` : ''}n={A.report.historicalPerformance.matches}{A.report.historicalPerformance.matches < 20 ? ', below the 20 needed for a reliable read' : ''}. The real test is the Live track record on the Picks tab. Tap ⓘ for formulas.</Text>
+
+                {/* Walk-forward (out-of-sample) */}
+                <View style={{ marginTop: 10, backgroundColor: C.bg, borderRadius: 8, padding: 10 }}>
+                  <Text style={{ color: C.textDim, fontSize: 11, fontWeight: '700', letterSpacing: 0.5 }}>WALK-FORWARD (does the edge survive?)</Text>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
+                    <View><Text style={styles.statK}>In-sample exp</Text><Text style={{ color: (A.report.walkForward.inSampleExp || 0) >= 0 ? C.good : C.bad, fontSize: 14, fontWeight: '800' }}>{A.report.walkForward.inSampleExp == null ? '—' : (A.report.walkForward.inSampleExp > 0 ? '+' : '') + A.report.walkForward.inSampleExp + '%'} <Text style={{ color: C.textFaint, fontWeight: '400' }}>n={A.report.walkForward.inSampleN}</Text></Text></View>
+                    <View style={{ alignItems: 'flex-end' }}><Text style={styles.statK}>Out-of-sample exp</Text><Text style={{ color: (A.report.walkForward.oosExp || 0) >= 0 ? C.good : C.bad, fontSize: 14, fontWeight: '800' }}>{A.report.walkForward.oosExp == null ? '—' : (A.report.walkForward.oosExp > 0 ? '+' : '') + A.report.walkForward.oosExp + '%'} <Text style={{ color: C.textFaint, fontWeight: '400' }}>n={A.report.walkForward.oosN}</Text></Text></View>
+                  </View>
+                  <Text style={{ color: /holds/.test(A.report.walkForward.verdict) ? C.good : /collapses|noise/.test(A.report.walkForward.verdict) ? C.bad : C.gold, fontSize: 12, fontWeight: '700', marginTop: 6 }}>{A.report.walkForward.verdict}</Text>
+                </View>
+
+                {/* Regime split */}
+                {A.byRegime && (A.byRegime.up.n > 0 || A.byRegime.down.n > 0) ? (
+                  <Text style={[styles.hint, { marginTop: 8 }]}>
+                    By regime — uptrend (EMA20&gt;50): {A.byRegime.up.exp == null ? '—' : (A.byRegime.up.exp > 0 ? '+' : '') + A.byRegime.up.exp + '%'} over {A.byRegime.up.n}; downtrend: {A.byRegime.down.exp == null ? '—' : (A.byRegime.down.exp > 0 ? '+' : '') + A.byRegime.down.exp + '%'} over {A.byRegime.down.n}. Trade the regime where the edge actually lives.
+                  </Text>
+                ) : null}
               </>
             ) : (
               <Text style={styles.hint}>Only {A.report.historicalPerformance.matches} similar past setup(s) in recent history — too few to report a meaningful hit-rate. Sample size matters more than a flashy number. Tap ⓘ to see how this is calculated.</Text>
@@ -603,9 +678,15 @@ function CalcInfoModal({ visible, A, onClose }) {
               </View>
             ))}
             <Text style={[styles.disc, { marginTop: 4 }]}>
-              Worked example — if 54 setups matched and 34 were wins: Hit rate = 34 ÷ 54 × 100 = 63%. With n=54 the 95% interval is roughly 49%–75%, i.e. “somewhere in the low-to-mid 60s,” not exactly 63%.{'\n\n'}
-              Limitations: backtest is in-sample on ~120 recent candles of this one stock; small samples are noisy; returns assume clean exits at T1/SL with no slippage; NEPSE’s T+2 settlement and thin liquidity mean past patterns may not repeat. This is descriptive, not a prediction or advice.
+              Worked example — if 54 setups matched and 34 were wins: Hit rate = 34 ÷ 54 × 100 = 63%. With n=54 the 95% interval is roughly 49%–75%, i.e. “somewhere in the low-to-mid 60s,” not exactly 63%.
             </Text>
+            <View style={{ marginTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, paddingTop: 10 }}>
+              <Text style={{ color: C.gold, fontWeight: '800', fontSize: 13 }}>Known data limitations (read these)</Text>
+              {(A && A.dataCaveats ? A.dataCaveats : []).map((c, i) => (
+                <Text key={i} style={[styles.hint, { marginTop: 5 }]}>• {c}</Text>
+              ))}
+              <Text style={[styles.hint, { marginTop: 5 }]}>• Walk-forward (in-sample vs out-of-sample) is shown so you can see whether an edge survives on data the levels weren’t drawn from. If it collapses out-of-sample, treat it as overfit.</Text>
+            </View>
           </ScrollView>
           <TouchableOpacity style={[styles.btn, { marginTop: 10 }]} onPress={onClose}><Text style={styles.btnTxt}>Got it</Text></TouchableOpacity>
         </View>

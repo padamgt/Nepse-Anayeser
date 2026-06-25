@@ -16,6 +16,8 @@ jobs:
           distribution: temurin
           java-version: 17
       - run: npm install
+      - name: Run engine tests (regression gate)
+        run: npm test
       - run: npx expo prebuild -p android --no-install
       - name: Add missing splash color
         run: |

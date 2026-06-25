@@ -3,7 +3,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getWatchlist, getIndexBand } from './data';
 import { analyze } from './analysis';
-import { loadJournal, liveStats } from './journal';
+import { loadJournal, liveStats, calibration } from './journal';
 
 const KEY_COOKIE = 'chukul.session';
 export const STOCK_LIST_URL = 'https://chukul.com/api/stock/';
@@ -101,11 +101,16 @@ export async function loadAnalysis() {
     };
   }
 
+  // Fetch NEPSE index candles ONCE up front so each stock gets relative-strength vs index.
+  let indexCandles = [];
+  try { indexCandles = await fetchCandles('NEPSE', cookie); } catch (e) { /* RS will be null */ }
+  const benchmark = indexCandles.length >= 60 ? indexCandles : null;
+
   const stocks = [];
   for (const w of watchlist) {
     try {
       const candles = await fetchCandles(w.symbol, cookie);
-      const a = analyze(candles);
+      const a = analyze(candles, { benchmark });
       if (a) {
         stocks.push({
           ...w, price: a.price, support: a.support, resistance: a.resistance,
@@ -120,19 +125,18 @@ export async function loadAnalysis() {
     }
   }
   // Track record reads from the journal (which is fed by Chart-tab searches, not the watchlist).
-  const liveRecord = liveStats(await loadJournal());
+  const _jrnl = await loadJournal();
+  const liveRecord = liveStats(_jrnl);
+  const liveCalibration = calibration(_jrnl);
 
-  // NEPSE index from Chukul (symbol "NEPSE"); keep user's band; null -> shows "—"
+  // Reuse the index candles fetched above for the header gauge.
   let index = { name: 'NEPSE Index', value: null, changePct: 0, ...indexBand };
   let indexOk = false;
-  try {
-    const ic = await fetchCandles('NEPSE', cookie);
-    if (ic.length) {
-      const v = ic[ic.length - 1].c;
-      index = { name: 'NEPSE Index', value: v, changePct: pctChange(ic, v) ?? 0, ...indexBand };
-      indexOk = true;
-    }
-  } catch (e) { /* leave null */ }
+  if (indexCandles.length) {
+    const v = indexCandles[indexCandles.length - 1].c;
+    index = { name: 'NEPSE Index', value: v, changePct: pctChange(indexCandles, v) ?? 0, ...indexBand };
+    indexOk = true;
+  }
 
   const anyStockOk = stocks.some((s) => s.price != null);
   const cookieWorks = indexOk || anyStockOk;
@@ -140,6 +144,6 @@ export async function loadAnalysis() {
   if (!cookieWorks) error = 'Chukul cookie may have expired — re-paste it in Settings or the Chart tab.';
   else if (watchlist.length && !anyStockOk) error = 'Index loaded but watchlist prices are missing — try Pull to refresh.';
   return {
-    live: cookieWorks, error, hasCookie: true, stocks, index, indexBand, watchlist, liveRecord,
+    live: cookieWorks, error, hasCookie: true, stocks, index, indexBand, watchlist, liveRecord, liveCalibration,
   };
 }

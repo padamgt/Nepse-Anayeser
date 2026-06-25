@@ -162,6 +162,7 @@ export default function App() {
               error={data.error}
               live={data.live}
               liveRecord={data.liveRecord}
+              liveCalibration={data.liveCalibration}
             />
           )}
           {tab === 'watch' && (
@@ -237,7 +238,7 @@ function Header({ index, live }) {
 }
 
 // ---- Best Picks -------------------------------------------------------------
-function BestPicks({ list, query, setQuery, onOpen, refreshing, onRefresh, error, live, liveRecord }) {
+function BestPicks({ list, query, setQuery, onOpen, refreshing, onRefresh, error, live, liveRecord, liveCalibration }) {
   return (
     <ScrollView
       style={styles.body}
@@ -271,6 +272,15 @@ function BestPicks({ list, query, setQuery, onOpen, refreshing, onRefresh, error
           <Text style={styles.trackNote}>
             Real forward results of signals logged when you open a stock in the Chart tab ({liveRecord.wins}W / {liveRecord.losses}L / {liveRecord.timeouts} timeout, {liveRecord.open} still open). This — not the backtest — is the honest scorecard. {liveRecord.n < 20 ? 'Still building a meaningful sample.' : ''}
           </Text>
+          {liveCalibration && liveCalibration.ready ? (
+            <View style={{ marginTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, paddingTop: 8 }}>
+              <Text style={styles.trackK}>CALIBRATION (predicted vs realized)</Text>
+              <Text style={{ color: Math.abs(liveCalibration.gap) <= 10 ? C.good : C.gold, fontSize: 13, fontWeight: '800', marginTop: 2 }}>
+                Predicted {liveCalibration.predMean}% · Realized {liveCalibration.realMean}% — {liveCalibration.verdict}
+              </Text>
+              <Text style={styles.trackNote}>Compares the hit-rate the backtest predicted at entry against what actually happened on {liveCalibration.n} resolved signals. A large gap means the model is mis-calibrated.</Text>
+            </View>
+          ) : null}
         </View>
       ) : (
         <View style={styles.trackCard}>

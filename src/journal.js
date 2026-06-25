@@ -25,6 +25,9 @@ export function recordInto(list, symbol, a, t0) {
   list.push({
     id, symbol, t0, signal: a.signal,
     entry: a.price, stop: a.stop, t1: a.t1,
+    predHit: a.report?.historicalPerformance?.hitRate ?? null,
+    predExp: a.report?.historicalPerformance?.expectancy ?? null,
+    confidence: a.confidence ?? null,
     status: 'open', created: Date.now(),
   });
   return true;
@@ -71,4 +74,17 @@ export function liveStats(list, signalFilter) {
   const hitRate = decided ? Math.round((wins / decided) * 100) : null;
   const since = new Date(Math.min(...resolved.map((e) => e.created || Date.now()))).toISOString().slice(0, 10);
   return { n, wins, losses, timeouts, hitRate, expectancy, pf, since, open: list.filter((e) => e.status === 'open').length };
+}
+
+// Calibration: did predicted hit-rate match realized? Compares the backtest hit-rate
+// recorded at entry against the actual decided outcomes. Honest reality check on the model.
+export function calibration(list) {
+  const decided = list.filter((e) => (e.status === 'win' || e.status === 'loss') && e.predHit != null);
+  const n = decided.length;
+  if (n < 5) return { n, ready: false };
+  const predMean = Math.round(decided.reduce((s, e) => s + e.predHit, 0) / n);
+  const realMean = Math.round((decided.filter((e) => e.status === 'win').length / n) * 100);
+  const gap = realMean - predMean;
+  const verdict = Math.abs(gap) <= 10 ? 'Well calibrated' : gap < -10 ? 'Over-optimistic (predicts more than it delivers)' : 'Under-promising (delivers more than predicted)';
+  return { n, ready: true, predMean, realMean, gap, verdict };
 }
