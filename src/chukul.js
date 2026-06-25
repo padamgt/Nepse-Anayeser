@@ -20,6 +20,19 @@ export async function setCookie(v) {
   await AsyncStorage.setItem(KEY_COOKIE, (v || '').trim());
 }
 
+// Persist the last sector-screen results so they survive tab switches / restarts
+// until the user runs a new scan. Stored trimmed (UI fields only) to stay small.
+const KEY_SCREEN = 'screen.results.v1';
+export async function saveScreen(obj) {
+  try { await AsyncStorage.setItem(KEY_SCREEN, JSON.stringify(obj)); } catch (e) { /* ignore */ }
+}
+export async function loadScreen() {
+  try { const s = await AsyncStorage.getItem(KEY_SCREEN); return s ? JSON.parse(s) : null; } catch (e) { return null; }
+}
+export async function clearScreen() {
+  try { await AsyncStorage.removeItem(KEY_SCREEN); } catch (e) { /* ignore */ }
+}
+
 function buildHeaders(cookie) {
   const h = { Accept: 'application/json' };
   if (cookie) h.Cookie = `chk-session=${cookie}`;

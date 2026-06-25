@@ -30,7 +30,7 @@ import {
 } from './src/data';
 import { rankStocks, compositeScore, computeSignal, SIGNAL_META } from './src/signals';
 import ChartScreen from './src/chart';
-import { getCookie, setCookie, fetchStockList, fetchCandles, loadAnalysis, screenSectors } from './src/chukul';
+import { getCookie, setCookie, fetchStockList, fetchCandles, loadAnalysis, screenSectors, saveScreen, loadScreen } from './src/chukul';
 import { analyze } from './src/analysis';
 import { BandGauge, GaugeLabels, SignalBadge, ScoreBar, fmt } from './src/components';
 
@@ -766,32 +766,65 @@ function Field({ label, value, onChange, numeric, caps }) {
 }
 
 // ---- Sector screen (research shortlist of entry-valid setups) ---------------
+function agoLabel(ts) {
+  if (!ts) return '';
+  const m = Math.round((Date.now() - ts) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return `${d}d ago`;
+}
+
 function SectorScreen({ onOpen }) {
   const [sectors, setSectors] = useState({ hydro: true, micro: true });
-  const [state, setState] = useState({ loading: false, results: null, err: '', progress: null, total: 0 });
+  const [state, setState] = useState({ loading: false, results: null, err: '', progress: null, total: 0, savedAt: null });
   const [showAll, setShowAll] = useState(false);
+
+  // Restore the last scan so results persist across tab switches / restarts.
+  useEffect(() => {
+    loadScreen().then((c) => {
+      if (c && c.results) setState((s) => ({ ...s, results: c.results, total: c.total || 0, savedAt: c.savedAt || null, err: '' }));
+      if (c && c.sectors) setSectors({ hydro: c.sectors.includes('hydro'), micro: c.sectors.includes('micro') });
+    });
+  }, []);
+
+  // Keep only the fields the screen UI needs, so storage stays small.
+  const trimA = (a) => ({
+    action: { label: a.action.label },
+    price: a.price, entryLow: a.entryLow, entryHigh: a.entryHigh,
+    rr: a.rr, tradeQuality: a.tradeQuality, liquidity: a.liquidity, relStrength: a.relStrength,
+    riskPlan: { entry: a.riskPlan.entry, stop: a.riskPlan.stop, t1: a.riskPlan.t1 },
+    report: { walkForward: { verdict: a.report.walkForward.verdict } },
+  });
 
   const run = async () => {
     const keys = [];
     if (sectors.hydro) keys.push('hydro');
     if (sectors.micro) keys.push('micro');
     if (!keys.length) { setState((s) => ({ ...s, err: 'Pick at least one sector.' })); return; }
-    setState({ loading: true, results: null, err: '', progress: 0, total: 0 });
+    setState({ loading: true, results: null, err: '', progress: 0, total: 0, savedAt: null });
     try {
       const out = await screenSectors(keys, (done, total) => setState((s) => ({ ...s, progress: done, total })));
-      setState({ loading: false, results: out.results || [], err: out.error || '', progress: null, total: out.total || 0 });
+      const trimmed = (out.results || []).map((r) => ({ symbol: r.symbol, name: r.name, sector: r.sector, score: r.score, a: trimA(r.a) }));
+      const savedAt = Date.now();
+      if (!out.error && trimmed.length) await saveScreen({ results: trimmed, total: out.total, savedAt, sectors: keys });
+      setState({ loading: false, results: trimmed, err: out.error || '', progress: null, total: out.total || 0, savedAt });
     } catch (e) {
-      setState({ loading: false, results: null, err: String(e.message || e), progress: null, total: 0 });
+      setState({ loading: false, results: null, err: String(e.message || e), progress: null, total: 0, savedAt: null });
     }
   };
 
   const all = state.results || [];
   const inZone = (a) => a.price >= a.entryLow * 0.99 && a.price <= a.entryHigh * 1.01;
-  // "Where I can make entry" = price is in the buy zone now, liquid enough, not an Avoid.
-  const entryNow = all.filter((r) => inZone(r.a) && r.a.liquidity !== 'Illiquid' && r.a.action.label !== 'Avoid').slice(0, 5);
-  // Fallback: strong setups close to entry (so the screen is never just blank).
-  const nearEntry = all.filter((r) => !inZone(r.a) && r.a.liquidity !== 'Illiquid' && r.a.action.label !== 'Avoid'
-    && (r.a.action.label === 'Buy' || r.a.action.label === 'Strong Buy' || r.a.action.label === 'Watch')).slice(0, 5);
+  const RANK = { 'Strong Buy': 0, 'Buy': 1, 'Watch': 2 };
+  // Actionable setups only (no Hold/Avoid, no illiquid), ordered Strong Buy → Buy → Watch, then by score.
+  const ranked = all
+    .filter((r) => RANK[r.a.action.label] != null && r.a.liquidity !== 'Illiquid')
+    .sort((x, y) => (RANK[x.a.action.label] - RANK[y.a.action.label]) || (y.score - x.score))
+    .slice(0, 15);
+  const nBuy = ranked.filter((r) => r.a.action.label === 'Strong Buy' || r.a.action.label === 'Buy').length;
 
   const Chip = ({ k, label }) => (
     <TouchableOpacity onPress={() => setSectors((s) => ({ ...s, [k]: !s[k] }))}
@@ -808,7 +841,10 @@ function SectorScreen({ onOpen }) {
       <TouchableOpacity onPress={() => onOpen(r.symbol)} style={{ backgroundColor: C.card, borderRadius: 12, padding: 12, marginTop: 10, borderWidth: 1, borderColor: C.border }}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
           <Text style={{ color: C.text, fontWeight: '900', fontSize: 16 }}>{idx != null ? idx + '. ' : ''}{r.symbol}</Text>
-          <Text style={{ color: col, fontWeight: '900', fontSize: 13 }}>{a.action.label.toUpperCase()}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            {inZone(a) ? <Text style={{ color: C.accent, fontSize: 10, fontWeight: '800', marginRight: 8 }}>● IN ZONE</Text> : null}
+            <Text style={{ color: col, fontWeight: '900', fontSize: 13 }}>{a.action.label.toUpperCase()}</Text>
+          </View>
         </View>
         <Text style={{ color: C.textFaint, fontSize: 11, marginTop: 1 }}>{r.sector}</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 }}>
@@ -830,7 +866,7 @@ function SectorScreen({ onOpen }) {
   return (
     <ScrollView style={styles.body} contentContainerStyle={{ paddingBottom: 90 }}>
       <Text style={styles.sectionTitle}>Sector screen</Text>
-      <Text style={[styles.sub, { marginTop: 4, marginBottom: 12 }]}>Scans every hydropower / microfinance stock on Chukul and lists only the ones the engine currently flags as a valid buy-entry. A research shortlist — not buy advice.</Text>
+      <Text style={[styles.sub, { marginTop: 4, marginBottom: 12 }]}>Scans every hydropower / microfinance stock on Chukul and lists the actionable ones, ordered Strong Buy → Buy → Watch. A research shortlist — not buy advice.</Text>
 
       <View style={{ flexDirection: 'row', marginBottom: 10 }}>
         <Chip k="hydro" label="Hydropower" />
@@ -855,27 +891,26 @@ function SectorScreen({ onOpen }) {
 
       {state.results && !state.loading ? (
         <>
-          <Text style={{ color: C.textDim, fontSize: 12, marginTop: 16, marginBottom: 2 }}>Scanned {state.total} stocks · {entryNow.length} in a buy zone now</Text>
+          <Text style={{ color: C.textDim, fontSize: 12, marginTop: 16, marginBottom: 2 }}>Scanned {state.total} stocks · {ranked.length} actionable · {nBuy} buy{state.savedAt ? ` · ${agoLabel(state.savedAt)}` : ''}</Text>
+          <Text style={{ color: C.textFaint, fontSize: 11, marginBottom: 2 }}>Ordered: Strong Buy → Buy → Watch. ● IN ZONE = price is at support now.</Text>
 
-          {entryNow.length === 0 ? (
+          {ranked.length === 0 ? (
             <View style={{ backgroundColor: C.card, borderRadius: 12, padding: 14, marginTop: 8, borderWidth: 1, borderColor: C.border }}>
-              <Text style={{ color: C.gold, fontWeight: '800', fontSize: 14 }}>No clean entries in a buy zone right now</Text>
-              <Text style={{ color: C.textDim, fontSize: 12.5, marginTop: 4 }}>None of the scanned names are sitting in their support/accumulate zone today. That’s a normal, honest outcome in thin sectors. See the closest setups below, or check after the next session.</Text>
+              <Text style={{ color: C.gold, fontWeight: '800', fontSize: 14 }}>No actionable setups right now</Text>
+              <Text style={{ color: C.textDim, fontSize: 12.5, marginTop: 4 }}>Every scanned name is Hold/Avoid or illiquid today. Normal in thin sectors — check after the next session.</Text>
             </View>
           ) : (
             <>
-              <Text style={{ color: C.good, fontWeight: '900', fontSize: 13, marginTop: 6 }}>IN A BUY ZONE NOW (top {entryNow.length})</Text>
-              <Text style={{ color: C.textFaint, fontSize: 11, marginTop: 2 }}>Price is inside the support/entry band. The action tag shows whether the engine also confirms the turn — read it before acting.</Text>
-              {entryNow.map((r, i) => <Card key={r.symbol} r={r} idx={i + 1} />)}
+              {nBuy === 0 ? (
+                <View style={{ backgroundColor: C.card, borderRadius: 10, padding: 10, marginTop: 6, marginBottom: 2, borderLeftWidth: 3, borderLeftColor: C.gold }}>
+                  <Text style={{ color: C.textDim, fontSize: 11.5, lineHeight: 16 }}>No Buy / Strong Buy today — a stock in its buy zone is at support, but Buy needs the reversal <Text style={{ fontWeight: '800' }}>confirmed</Text> (price already turning up). Until that bounce, in-zone names stay Watch. They’ll rank first here the moment one confirms.</Text>
+                </View>
+              ) : null}
+              {ranked.map((r, i) => <Card key={r.symbol} r={r} idx={i + 1} />)}
             </>
           )}
 
-          <TouchableOpacity onPress={() => setShowAll((v) => !v)} style={{ marginTop: 16 }}>
-            <Text style={{ color: C.accent, fontWeight: '700', fontSize: 13 }}>{showAll ? '▲ Hide' : '▼ Show'} closest setups (not in zone yet) — {nearEntry.length}</Text>
-          </TouchableOpacity>
-          {showAll ? (nearEntry.length ? nearEntry.map((r) => <Card key={r.symbol} r={r} idx={null} />) : <Text style={[styles.sub, { marginTop: 8 }]}>No other qualifying setups.</Text>) : null}
-
-          <Text style={[styles.sub, { marginTop: 16, lineHeight: 17 }]}>Ranking is descriptive (setup quality, out-of-sample edge, liquidity, relative strength) — not a prediction or recommendation. “In a buy zone” means price is at support; it does NOT mean the reversal is confirmed. NEPSE is thin and moves on news/liquidity, not chart structure. Verify each name and size with the risk plan in its report. Not financial advice.</Text>
+          <Text style={[styles.sub, { marginTop: 16, lineHeight: 17 }]}>Ranking is descriptive (action strength, then setup quality / out-of-sample edge / liquidity / relative strength) — not a prediction or recommendation. Watch ≠ buy now; “in zone” means price is at support, not that the turn is confirmed. NEPSE is thin and moves on news/liquidity. Verify each name and size with the risk plan in its report. Not financial advice.</Text>
         </>
       ) : null}
     </ScrollView>
