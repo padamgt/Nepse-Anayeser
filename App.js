@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -766,6 +766,16 @@ function Field({ label, value, onChange, numeric, caps }) {
 }
 
 // ---- Sector screen (research shortlist of entry-valid setups) ---------------
+const SECTOR_DEFS = [
+  { key: 'hydro', label: 'Hydropower', color: '#3B9EFF' },
+  { key: 'micro', label: 'Microfinance', color: '#2EC27E' },
+  { key: 'life', label: 'Life Insurance', color: '#9B7BFF' },
+  { key: 'nonlife', label: 'Non-life Insurance', color: '#FF8A5B' },
+  { key: 'pharma', label: 'Pharmaceutical', color: '#FF5C8A' },
+];
+const SECTOR_NAME = { '5': 'Hydropower', '7': 'Life Insurance', '8': 'Pharmaceutical', '9': 'Microfinance', '11': 'Non-life Insurance' };
+const ALL_KEYS = SECTOR_DEFS.map((d) => d.key);
+
 function agoLabel(ts) {
   if (!ts) return '';
   const m = Math.round((Date.now() - ts) / 60000);
@@ -778,17 +788,32 @@ function agoLabel(ts) {
 }
 
 function SectorScreen({ onOpen }) {
-  const [sectors, setSectors] = useState({ hydro: true, micro: true });
-  const [state, setState] = useState({ loading: false, results: null, err: '', progress: null, total: 0, savedAt: null });
+  const [sectors, setSectors] = useState({ hydro: true, micro: false, life: false, nonlife: false, pharma: false });
+  const [state, setState] = useState({ loading: false, results: null, err: '', progress: null, total: 0, savedAt: null, sectorsScanned: [] });
   const [showAll, setShowAll] = useState(false);
+  const touched = useRef(false);   // true only after the user changes a sector
+  const tokenRef = useRef(0);      // supersede stale/in-flight scans
 
   // Restore the last scan so results persist across tab switches / restarts.
   useEffect(() => {
     loadScreen().then((c) => {
-      if (c && c.results) setState((s) => ({ ...s, results: c.results, total: c.total || 0, savedAt: c.savedAt || null, err: '' }));
-      if (c && c.sectors) setSectors({ hydro: c.sectors.includes('hydro'), micro: c.sectors.includes('micro') });
+      if (c && c.results) setState((s) => ({ ...s, results: c.results, total: c.total || 0, savedAt: c.savedAt || null, err: '', sectorsScanned: c.sectors || [] }));
+      if (c && c.sectors) setSectors(Object.fromEntries(ALL_KEYS.map((k) => [k, c.sectors.includes(k)])));
     });
   }, []);
+
+  // Auto-scan shortly after the user finishes changing the sector selection.
+  useEffect(() => {
+    if (!touched.current) return;          // ignore mount + cache restore
+    const keys = ALL_KEYS.filter((k) => sectors[k]);
+    if (!keys.length) return;              // nothing selected → keep last results
+    const id = setTimeout(() => run(keys), 700);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sectors]);
+
+  const toggle = (k) => { touched.current = true; setSectors((s) => ({ ...s, [k]: !s[k] })); };
+  const setAll = (v) => { touched.current = true; setSectors(Object.fromEntries(ALL_KEYS.map((k) => [k, v]))); };
 
   // Keep only the fields the screen UI needs, so storage stays small.
   const trimA = (a) => ({
@@ -799,19 +824,20 @@ function SectorScreen({ onOpen }) {
     report: { walkForward: { verdict: a.report.walkForward.verdict } },
   });
 
-  const run = async () => {
-    const keys = [];
-    if (sectors.hydro) keys.push('hydro');
-    if (sectors.micro) keys.push('micro');
+  const run = async (forcedKeys) => {
+    const keys = forcedKeys || ALL_KEYS.filter((k) => sectors[k]);
     if (!keys.length) { setState((s) => ({ ...s, err: 'Pick at least one sector.' })); return; }
-    setState({ loading: true, results: null, err: '', progress: 0, total: 0, savedAt: null });
+    const myToken = ++tokenRef.current;
+    setState({ loading: true, results: null, err: '', progress: 0, total: 0, savedAt: null, sectorsScanned: keys });
     try {
-      const out = await screenSectors(keys, (done, total) => setState((s) => ({ ...s, progress: done, total })));
+      const out = await screenSectors(keys, (done, total) => { if (myToken === tokenRef.current) setState((s) => ({ ...s, progress: done, total })); });
+      if (myToken !== tokenRef.current) return; // a newer selection superseded this scan
       const trimmed = (out.results || []).map((r) => ({ symbol: r.symbol, name: r.name, sector: r.sector, score: r.score, a: trimA(r.a) }));
       const savedAt = Date.now();
       if (!out.error && trimmed.length) await saveScreen({ results: trimmed, total: out.total, savedAt, sectors: keys });
-      setState({ loading: false, results: trimmed, err: out.error || '', progress: null, total: out.total || 0, savedAt });
+      setState({ loading: false, results: trimmed, err: out.error || '', progress: null, total: out.total || 0, savedAt, sectorsScanned: keys });
     } catch (e) {
+      if (myToken !== tokenRef.current) return;
       setState({ loading: false, results: null, err: String(e.message || e), progress: null, total: 0, savedAt: null });
     }
   };
@@ -826,14 +852,6 @@ function SectorScreen({ onOpen }) {
     .slice(0, 15);
   const nBuy = ranked.filter((r) => r.a.action.label === 'Strong Buy' || r.a.action.label === 'Buy').length;
 
-  const Chip = ({ k, label }) => (
-    <TouchableOpacity onPress={() => setSectors((s) => ({ ...s, [k]: !s[k] }))}
-      style={{ flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center', marginRight: k === 'hydro' ? 8 : 0,
-        backgroundColor: sectors[k] ? C.accent : C.card, borderWidth: 1, borderColor: sectors[k] ? C.accent : C.border }}>
-      <Text style={{ color: sectors[k] ? '#06121F' : C.textDim, fontWeight: '800', fontSize: 13 }}>{label}</Text>
-    </TouchableOpacity>
-  );
-
   const Card = ({ r, idx }) => {
     const a = r.a;
     const col = a.action.label === 'Strong Buy' ? C.good : a.action.label === 'Buy' ? '#2E9E6B' : a.action.label === 'Watch' ? C.gold : C.bad;
@@ -846,7 +864,7 @@ function SectorScreen({ onOpen }) {
             <Text style={{ color: col, fontWeight: '900', fontSize: 13 }}>{a.action.label.toUpperCase()}</Text>
           </View>
         </View>
-        <Text style={{ color: C.textFaint, fontSize: 11, marginTop: 1 }}>{r.sector}</Text>
+        <Text style={{ color: C.textFaint, fontSize: 11, marginTop: 1 }}>{SECTOR_NAME[String(r.sector)] || ('Sector ' + r.sector)}</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 }}>
           {[`Now ${fmt(a.price)}`, `Entry ${fmt(a.riskPlan.entry)}`, `Stop ${fmt(a.riskPlan.stop)}`, `T1 ${fmt(a.riskPlan.t1)}`, `R:R 1:${a.rr.toFixed(1)}`].map((t, i) => (
             <Text key={i} style={{ color: C.textDim, fontSize: 11.5, marginRight: 12, marginBottom: 3 }}>{t}</Text>
@@ -866,14 +884,35 @@ function SectorScreen({ onOpen }) {
   return (
     <ScrollView style={styles.body} contentContainerStyle={{ paddingBottom: 90 }}>
       <Text style={styles.sectionTitle}>Sector screen</Text>
-      <Text style={[styles.sub, { marginTop: 4, marginBottom: 12 }]}>Scans every hydropower / microfinance stock on Chukul and lists the actionable ones, ordered Strong Buy → Buy → Watch. A research shortlist — not buy advice.</Text>
+      <Text style={[styles.sub, { marginTop: 4, marginBottom: 12 }]}>Tap sectors to scan automatically (Strong Buy → Buy → Watch). A research shortlist — not buy advice.</Text>
 
-      <View style={{ flexDirection: 'row', marginBottom: 10 }}>
-        <Chip k="hydro" label="Hydropower" />
-        <Chip k="micro" label="Microfinance" />
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <Text style={{ color: C.textDim, fontSize: 12, fontWeight: '800', letterSpacing: 0.5 }}>SECTORS</Text>
+        <View style={{ flexDirection: 'row' }}>
+          <TouchableOpacity onPress={() => setAll(true)}><Text style={{ color: C.accent, fontSize: 12, fontWeight: '800', marginRight: 16 }}>All</Text></TouchableOpacity>
+          <TouchableOpacity onPress={() => setAll(false)}><Text style={{ color: C.textDim, fontSize: 12, fontWeight: '800' }}>None</Text></TouchableOpacity>
+        </View>
+      </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 10 }}>
+        {SECTOR_DEFS.map((def) => {
+          const on = !!sectors[def.key];
+          return (
+            <TouchableOpacity key={def.key} activeOpacity={0.85}
+              onPress={() => toggle(def.key)}
+              style={{ width: '48.5%', marginBottom: 10, flexDirection: 'row', alignItems: 'center',
+                paddingVertical: 13, paddingHorizontal: 12, borderRadius: 14,
+                backgroundColor: on ? def.color + '22' : C.card,
+                borderWidth: 1.5, borderColor: on ? def.color : C.border }}>
+              <View style={{ width: 11, height: 11, borderRadius: 6, backgroundColor: def.color, marginRight: 10,
+                opacity: on ? 1 : 0.45 }} />
+              <Text numberOfLines={1} style={{ flex: 1, color: on ? C.text : C.textDim, fontWeight: '700', fontSize: 12.5 }}>{def.label}</Text>
+              {on ? <Text style={{ color: def.color, fontWeight: '900', fontSize: 14, marginLeft: 4 }}>✓</Text> : null}
+            </TouchableOpacity>
+          );
+        })}
       </View>
       <TouchableOpacity onPress={run} disabled={state.loading} style={[styles.primaryBtn, { opacity: state.loading ? 0.6 : 1 }]}>
-        <Text style={styles.primaryBtnTxt}>{state.loading ? `Scanning ${state.progress ?? 0}/${state.total || '…'}` : 'Run screen'}</Text>
+        <Text style={styles.primaryBtnTxt}>{state.loading ? `Scanning ${state.progress ?? 0}/${state.total || '…'}` : 'Rescan now'}</Text>
       </TouchableOpacity>
 
       {state.loading ? (
@@ -883,7 +922,7 @@ function SectorScreen({ onOpen }) {
             <Text style={{ color: C.text, fontWeight: '800', fontSize: 13 }}>
               {state.total ? `Scanning ${state.progress ?? 0} of ${state.total}` : 'Fetching stock list…'}
             </Text>
-            <Text style={{ color: C.textFaint, fontSize: 11.5, marginTop: 2 }}>Thin sectors can hold 100+ names — this may take a minute or two. Each is fetched and analysed individually.</Text>
+            <Text style={{ color: C.textFaint, fontSize: 11.5, marginTop: 2 }}>Sectors: {ALL_KEYS.filter((k) => sectors[k]).map((k) => SECTOR_DEFS.find((d) => d.key === k).label).join(', ') || '—'}. Each name is fetched and analysed individually.</Text>
           </View>
         </View>
       ) : null}
@@ -891,7 +930,7 @@ function SectorScreen({ onOpen }) {
 
       {state.results && !state.loading ? (
         <>
-          <Text style={{ color: C.textDim, fontSize: 12, marginTop: 16, marginBottom: 2 }}>Scanned {state.total} stocks · {ranked.length} actionable · {nBuy} buy{state.savedAt ? ` · ${agoLabel(state.savedAt)}` : ''}</Text>
+          <Text style={{ color: C.textDim, fontSize: 12, marginTop: 16, marginBottom: 2 }}>{(state.sectorsScanned || []).map((k) => (SECTOR_DEFS.find((d) => d.key === k) || {}).label || k).join(', ') || 'Sectors'}: {state.total} stocks · {ranked.length} actionable · {nBuy} buy{state.savedAt ? ` · ${agoLabel(state.savedAt)}` : ''}</Text>
           <Text style={{ color: C.textFaint, fontSize: 11, marginBottom: 2 }}>Ordered: Strong Buy → Buy → Watch. ● IN ZONE = price is at support now.</Text>
 
           {ranked.length === 0 ? (

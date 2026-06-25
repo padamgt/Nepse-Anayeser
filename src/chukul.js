@@ -124,6 +124,9 @@ export async function screenSectors(sectors, onProgress) {
   const GROUPS = {
     hydro: { codes: ['5'], kw: ['hydro'] },
     micro: { codes: ['9'], kw: ['micro', 'laghubitta'] },
+    life: { codes: ['7'], kw: ['life insurance'] },
+    pharma: { codes: ['8'], kw: ['pharma'] },
+    nonlife: { codes: ['11'], kw: ['non life', 'non-life'] },
   };
   const wanted = sectors.map((s) => GROUPS[String(s).toLowerCase()]).filter(Boolean);
   const codeSet = new Set(wanted.flatMap((g) => g.codes));
