@@ -108,7 +108,12 @@ export async function screenSectors(sectors, onProgress) {
   const list = await fetchStockList(cookie);
   const keys = sectors.map((s) => s.toLowerCase());
   const universe = list.filter((s) => s.sector && keys.some((k) => String(s.sector).toLowerCase().includes(k)));
-  if (!universe.length) return { error: 'No stocks matched those sectors in the Chukul list.', results: [], total: 0 };
+  if (!universe.length) {
+    // Fallback: some Chukul payloads omit/encode sector — surface what sectors DO exist so we can fix the filter.
+    const seen = Array.from(new Set(list.map((s) => s.sector).filter(Boolean))).slice(0, 12);
+    return { error: `No stocks matched those sectors. Sector labels seen in Chukul: ${seen.join(', ') || '(none — sector field missing)'}`, results: [], total: 0, sectorsSeen: seen };
+  }
+  if (onProgress) onProgress(0, universe.length); // show the total right away
 
   let benchmark = null;
   try { const ic = await fetchCandles('NEPSE', cookie); if (ic.length >= 60) benchmark = ic; } catch (e) { /* RS optional */ }

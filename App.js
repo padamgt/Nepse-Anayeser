@@ -786,8 +786,12 @@ function SectorScreen({ onOpen }) {
   };
 
   const all = state.results || [];
-  const buyable = all.filter((r) => r.a.action.label === 'Buy' || r.a.action.label === 'Strong Buy').slice(0, 5);
-  const nearEntry = all.filter((r) => r.a.action.label === 'Watch').slice(0, 5);
+  const inZone = (a) => a.price >= a.entryLow * 0.99 && a.price <= a.entryHigh * 1.01;
+  // "Where I can make entry" = price is in the buy zone now, liquid enough, not an Avoid.
+  const entryNow = all.filter((r) => inZone(r.a) && r.a.liquidity !== 'Illiquid' && r.a.action.label !== 'Avoid').slice(0, 5);
+  // Fallback: strong setups close to entry (so the screen is never just blank).
+  const nearEntry = all.filter((r) => !inZone(r.a) && r.a.liquidity !== 'Illiquid' && r.a.action.label !== 'Avoid'
+    && (r.a.action.label === 'Buy' || r.a.action.label === 'Strong Buy' || r.a.action.label === 'Watch')).slice(0, 5);
 
   const Chip = ({ k, label }) => (
     <TouchableOpacity onPress={() => setSectors((s) => ({ ...s, [k]: !s[k] }))}
@@ -836,31 +840,42 @@ function SectorScreen({ onOpen }) {
         <Text style={styles.primaryBtnTxt}>{state.loading ? `Scanning ${state.progress ?? 0}/${state.total || '…'}` : 'Run screen'}</Text>
       </TouchableOpacity>
 
-      {state.loading && <ActivityIndicator color={C.accent} style={{ marginTop: 14 }} />}
+      {state.loading ? (
+        <View style={{ backgroundColor: C.card, borderRadius: 12, padding: 14, marginTop: 14, borderWidth: 1, borderColor: C.border, flexDirection: 'row', alignItems: 'center' }}>
+          <ActivityIndicator color={C.accent} />
+          <View style={{ marginLeft: 12, flex: 1 }}>
+            <Text style={{ color: C.text, fontWeight: '800', fontSize: 13 }}>
+              {state.total ? `Scanning ${state.progress ?? 0} of ${state.total}` : 'Fetching stock list…'}
+            </Text>
+            <Text style={{ color: C.textFaint, fontSize: 11.5, marginTop: 2 }}>Thin sectors can hold 100+ names — this may take a minute or two. Each is fetched and analysed individually.</Text>
+          </View>
+        </View>
+      ) : null}
       {state.err ? <Text style={[styles.bannerTxt, { marginTop: 12 }]}>{state.err}</Text> : null}
 
       {state.results && !state.loading ? (
         <>
-          <Text style={{ color: C.textDim, fontSize: 12, marginTop: 16, marginBottom: 2 }}>Scanned {state.total} stocks · {buyable.length} currently entry-valid</Text>
+          <Text style={{ color: C.textDim, fontSize: 12, marginTop: 16, marginBottom: 2 }}>Scanned {state.total} stocks · {entryNow.length} in a buy zone now</Text>
 
-          {buyable.length === 0 ? (
+          {entryNow.length === 0 ? (
             <View style={{ backgroundColor: C.card, borderRadius: 12, padding: 14, marginTop: 8, borderWidth: 1, borderColor: C.border }}>
-              <Text style={{ color: C.gold, fontWeight: '800', fontSize: 14 }}>No buy-entry setups right now</Text>
-              <Text style={{ color: C.textDim, fontSize: 12.5, marginTop: 4 }}>None of the scanned names are in a confirmed entry today. That’s a normal, honest outcome — most days, thin sectors have nothing actionable. See near-entry Watch names below, or check back after the next session.</Text>
+              <Text style={{ color: C.gold, fontWeight: '800', fontSize: 14 }}>No clean entries in a buy zone right now</Text>
+              <Text style={{ color: C.textDim, fontSize: 12.5, marginTop: 4 }}>None of the scanned names are sitting in their support/accumulate zone today. That’s a normal, honest outcome in thin sectors. See the closest setups below, or check after the next session.</Text>
             </View>
           ) : (
             <>
-              <Text style={{ color: C.good, fontWeight: '900', fontSize: 13, marginTop: 6 }}>ENTRY-VALID NOW (top {buyable.length})</Text>
-              {buyable.map((r, i) => <Card key={r.symbol} r={r} idx={i + 1} />)}
+              <Text style={{ color: C.good, fontWeight: '900', fontSize: 13, marginTop: 6 }}>IN A BUY ZONE NOW (top {entryNow.length})</Text>
+              <Text style={{ color: C.textFaint, fontSize: 11, marginTop: 2 }}>Price is inside the support/entry band. The action tag shows whether the engine also confirms the turn — read it before acting.</Text>
+              {entryNow.map((r, i) => <Card key={r.symbol} r={r} idx={i + 1} />)}
             </>
           )}
 
           <TouchableOpacity onPress={() => setShowAll((v) => !v)} style={{ marginTop: 16 }}>
-            <Text style={{ color: C.accent, fontWeight: '700', fontSize: 13 }}>{showAll ? '▲ Hide' : '▼ Show'} near-entry (Watch) — {nearEntry.length}</Text>
+            <Text style={{ color: C.accent, fontWeight: '700', fontSize: 13 }}>{showAll ? '▲ Hide' : '▼ Show'} closest setups (not in zone yet) — {nearEntry.length}</Text>
           </TouchableOpacity>
-          {showAll ? (nearEntry.length ? nearEntry.map((r) => <Card key={r.symbol} r={r} idx={null} />) : <Text style={[styles.sub, { marginTop: 8 }]}>No Watch-stage setups either.</Text>) : null}
+          {showAll ? (nearEntry.length ? nearEntry.map((r) => <Card key={r.symbol} r={r} idx={null} />) : <Text style={[styles.sub, { marginTop: 8 }]}>No other qualifying setups.</Text>) : null}
 
-          <Text style={[styles.sub, { marginTop: 16 }]}>Ranking is descriptive (setup quality, out-of-sample edge, liquidity, relative strength) — it is not a prediction or a recommendation. NEPSE is thin and moves on news/liquidity, not chart structure. Verify each name yourself and size with the risk plan inside its report. Not financial advice.</Text>
+          <Text style={[styles.sub, { marginTop: 16, lineHeight: 17 }]}>Ranking is descriptive (setup quality, out-of-sample edge, liquidity, relative strength) — not a prediction or recommendation. “In a buy zone” means price is at support; it does NOT mean the reversal is confirmed. NEPSE is thin and moves on news/liquidity, not chart structure. Verify each name and size with the risk plan in its report. Not financial advice.</Text>
         </>
       ) : null}
     </ScrollView>
