@@ -597,7 +597,7 @@ function Settings({ data, onSaved }) {
         delayed or wrong. Analysis tooling, not investment advice — verify against official NEPSE before trading.
       </Text>
       <Text style={[styles.disclaimer, { marginTop: 14, textAlign: 'center', opacity: 0.8 }]}>
-        NEPSE Analyzer  ·  v1.0{'\n'}© 2026 Bibek Jha. All rights reserved.{'\n'}For personal research only. Not investment advice.
+        NEPSE Analyzer  ·  v1.0  ·  build 35{'\n'}© 2026 Bibek Jha. All rights reserved.{'\n'}For personal research only. Not investment advice.
       </Text>
     </ScrollView>
   );
@@ -883,7 +883,7 @@ function SectorScreen({ onOpen }) {
   });
 
   const run = async (forcedKeys) => {
-    const keys = forcedKeys || ALL_KEYS.filter((k) => sectors[k]);
+    const keys = Array.isArray(forcedKeys) ? forcedKeys : ALL_KEYS.filter((k) => sectors[k]);
     if (!keys.length) { setState((s) => ({ ...s, err: 'Pick at least one sector.' })); return; }
     const myToken = ++tokenRef.current;
     setState({ loading: true, results: null, err: '', progress: 0, total: 0, savedAt: null, sectorsScanned: keys });
@@ -969,7 +969,7 @@ function SectorScreen({ onOpen }) {
           );
         })}
       </View>
-      <TouchableOpacity onPress={run} disabled={state.loading} style={[styles.primaryBtn, { opacity: state.loading ? 0.6 : 1 }]}>
+      <TouchableOpacity onPress={() => run()} disabled={state.loading} style={[styles.primaryBtn, { opacity: state.loading ? 0.6 : 1 }]}>
         <Text style={styles.primaryBtnTxt}>{state.loading ? `Scanning ${state.progress ?? 0}/${state.total || '…'}` : 'Run screen'}</Text>
       </TouchableOpacity>
 
@@ -984,7 +984,7 @@ function SectorScreen({ onOpen }) {
           </View>
         </View>
       ) : null}
-      {state.err ? <Text style={[styles.bannerTxt, { marginTop: 12 }]}>{state.err}</Text> : null}
+      {state.err && !(state.err.startsWith('Pick at least one') && ALL_KEYS.some((k) => sectors[k])) ? <Text style={[styles.bannerTxt, { marginTop: 12 }]}>{state.err}</Text> : null}
 
       {state.results && !state.loading ? (
         <>
