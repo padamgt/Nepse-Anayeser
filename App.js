@@ -30,7 +30,8 @@ import {
 } from './src/data';
 import { rankStocks, compositeScore, computeSignal, SIGNAL_META } from './src/signals';
 import ChartScreen from './src/chart';
-import { getCookie, setCookie, fetchStockList, fetchCandles, loadAnalysis, screenSectors, saveScreen, loadScreen } from './src/chukul';
+import { getCookie, setCookie, fetchStockList, fetchCandles, loadAnalysis, screenSectors, saveScreen, loadScreen, syncAll } from './src/chukul';
+import { getSyncMeta, syncedToday, cachedSymbolCount, cachedSymbols, clearCandleCache } from './src/cache';
 import { analyze } from './src/analysis';
 import { BandGauge, GaugeLabels, SignalBadge, ScoreBar, fmt } from './src/components';
 
@@ -467,6 +468,66 @@ function MoverRow({ m, positive }) {
 }
 
 // ---- Settings ---------------------------------------------------------------
+// ---- Daily data sync control --------------------------------------------------
+function SyncControl() {
+  const [meta, setMeta] = useState(null);
+  const [count, setCount] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [prog, setProg] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [msg, setMsg] = useState('');
+
+  const refreshMeta = async () => { setMeta(await getSyncMeta()); setCount(await cachedSymbolCount()); };
+  useEffect(() => { refreshMeta(); }, []);
+
+  const sync = async () => {
+    setBusy(true); setMsg(''); setProg(0); setTotal(0);
+    try {
+      const cookie = await getCookie();
+      if (!cookie) { setMsg('Set your Chukul cookie below first.'); setBusy(false); return; }
+      // Scoped sync: only the symbols you actually use — your watchlist plus anything
+      // you've already viewed (cached). Avoids a whole-market pull that looks like scraping.
+      const wl = (await getWatchlist()).map((w) => w.symbol);
+      const seen = await cachedSymbols();
+      const syms = Array.from(new Set([...wl, ...seen]));
+      if (!syms.length) { setMsg('Nothing to sync yet — add to your watchlist or open a few stocks first.'); setBusy(false); return; }
+      const out = await syncAll(syms, cookie, (d, t) => { setProg(d); setTotal(t); });
+      setMsg(`Synced ${out.synced}/${out.total} symbols.`);
+      await refreshMeta();
+    } catch (e) {
+      setMsg('✗ ' + String(e.message || e));
+    } finally { setBusy(false); setProg(null); }
+  };
+
+  const clear = async () => { await clearCandleCache(); setMsg('Cache cleared.'); await refreshMeta(); };
+
+  const fresh = meta && syncedToday(meta.at);
+  return (
+    <View style={[styles.card, { marginBottom: 14 }]}>
+      <Text style={styles.cardTitle}>Data sync</Text>
+      <Text style={[styles.sub, { marginTop: 4 }]}>
+        The app reads candles from device storage so it doesn't call Chukul every time. Sync refreshes only your watchlist and stocks you've opened — not the whole market — once a day after close (Sun–Thu, ~3 PM).
+      </Text>
+      <View style={{ marginTop: 8, marginBottom: 10 }}>
+        <Text style={{ color: fresh ? C.good : C.gold, fontSize: 13, fontWeight: '800' }}>
+          {meta ? (fresh ? '● Synced today' : `● Last sync ${agoLabel(meta.at)} — refresh for today's close`) : '● Not synced yet'}
+        </Text>
+        <Text style={{ color: C.textFaint, fontSize: 11.5, marginTop: 2 }}>{count} symbols cached on this device.</Text>
+      </View>
+      <TouchableOpacity onPress={sync} disabled={busy} style={[styles.primaryBtn, { opacity: busy ? 0.6 : 1 }]}>
+        <Text style={styles.primaryBtnTxt}>{busy ? `Syncing ${prog ?? 0}/${total || '…'}` : 'Sync today’s data'}</Text>
+      </TouchableOpacity>
+      {busy ? <ActivityIndicator color={C.accent} style={{ marginTop: 10 }} /> : null}
+      {msg ? <Text style={[styles.sub, { marginTop: 8 }]}>{msg}</Text> : null}
+      {count > 0 ? (
+        <TouchableOpacity onPress={clear} style={{ marginTop: 10 }}>
+          <Text style={{ color: C.bad, fontSize: 12, fontWeight: '700' }}>Clear cached data</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+}
+
 function Settings({ data, onSaved }) {
   const [ck, setCk] = useState('');
   const [sup, setSup] = useState(String(data.indexBand.support));
@@ -501,6 +562,8 @@ function Settings({ data, onSaved }) {
     <ScrollView style={styles.body} contentContainerStyle={{ paddingBottom: 96 }} keyboardShouldPersistTaps="handled">
       <Text style={styles.sectionTitle}>Settings</Text>
 
+      <SyncControl />
+
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Chukul session cookie</Text>
         <TextInput style={styles.input} value={ck} onChangeText={setCk} autoCapitalize="none" autoCorrect={false} placeholder="paste chk-session value" placeholderTextColor={C.textFaint} />
@@ -532,6 +595,9 @@ function Settings({ data, onSaved }) {
       <Text style={styles.disclaimer}>
         Personal use. Data via Chukul's logged-in API with your own session — keep this build private. Prices may be
         delayed or wrong. Analysis tooling, not investment advice — verify against official NEPSE before trading.
+      </Text>
+      <Text style={[styles.disclaimer, { marginTop: 14, textAlign: 'center', opacity: 0.8 }]}>
+        NEPSE Analyzer  ·  v1.0{'\n'}© 2026 Bibek Jha. All rights reserved.{'\n'}For personal research only. Not investment advice.
       </Text>
     </ScrollView>
   );
@@ -769,11 +835,14 @@ function Field({ label, value, onChange, numeric, caps }) {
 const SECTOR_DEFS = [
   { key: 'hydro', label: 'Hydropower', color: '#3B9EFF' },
   { key: 'micro', label: 'Microfinance', color: '#2EC27E' },
+  { key: 'devbank', label: 'Development Bank', color: '#F2A93B' },
+  { key: 'finance', label: 'Finance', color: '#2BB6C4' },
   { key: 'life', label: 'Life Insurance', color: '#9B7BFF' },
   { key: 'nonlife', label: 'Non-life Insurance', color: '#FF8A5B' },
   { key: 'manuf', label: 'Manufacturing', color: '#FF5C8A' },
+  { key: 'other', label: 'Other', color: '#8893A6' },
 ];
-const SECTOR_NAME = { '5': 'Hydropower', '7': 'Life Insurance', '8': 'Manufacturing', '9': 'Microfinance', '11': 'Non-life Insurance' };
+const SECTOR_NAME = { '2': 'Development Bank', '3': 'Finance', '5': 'Hydropower', '7': 'Life Insurance', '8': 'Manufacturing', '9': 'Microfinance', '10': 'Non-life Insurance', '11': 'Other' };
 const ALL_KEYS = SECTOR_DEFS.map((d) => d.key);
 
 function agoLabel(ts) {
@@ -788,7 +857,7 @@ function agoLabel(ts) {
 }
 
 function SectorScreen({ onOpen }) {
-  const [sectors, setSectors] = useState({ hydro: true, micro: false, life: false, nonlife: false, manuf: false });
+  const [sectors, setSectors] = useState({ hydro: true, micro: false, devbank: false, finance: false, life: false, nonlife: false, manuf: false, other: false });
   const [state, setState] = useState({ loading: false, results: null, err: '', progress: null, total: 0, savedAt: null, sectorsScanned: [] });
   const [showAll, setShowAll] = useState(false);
   const tokenRef = useRef(0);      // supersede stale/in-flight scans
@@ -801,8 +870,8 @@ function SectorScreen({ onOpen }) {
     });
   }, []);
 
-  const toggle = (k) => setSectors((s) => ({ ...s, [k]: !s[k] }));
-  const setAll = (v) => setSectors(Object.fromEntries(ALL_KEYS.map((k) => [k, v])));
+  const toggle = (k) => { setSectors((s) => ({ ...s, [k]: !s[k] })); setState((s) => (s.err ? { ...s, err: '' } : s)); };
+  const setAll = (v) => { setSectors(Object.fromEntries(ALL_KEYS.map((k) => [k, v]))); setState((s) => (s.err ? { ...s, err: '' } : s)); };
 
   // Keep only the fields the screen UI needs, so storage stays small.
   const trimA = (a) => ({

@@ -6,9 +6,19 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "nepseanalyzer",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B1220"
+    },
     "android": {
       "package": "com.bibekjha.nepseanalyzer",
-      "versionCode": 1
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B1220"
+      }
     },
     "ios": {
       "bundleIdentifier": "com.bibekjha.nepseanalyzer",

@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getWatchlist, getIndexBand } from './data';
 import { analyze } from './analysis';
 import { loadJournal, liveStats, calibration } from './journal';
+import { cacheGetCandles, cacheSetCandles, setSyncMeta } from './cache';
 
 const KEY_COOKIE = 'chukul.session';
 export const STOCK_LIST_URL = 'https://chukul.com/api/stock/';
@@ -56,9 +57,18 @@ async function getJSON(url, cookie, ms = 15000) {
 export async function fetchStockList(cookie) {
   const data = await getJSON(STOCK_LIST_URL, cookie);
   const arr = Array.isArray(data) ? data : data.results || data.data || [];
+  const sectorOf = (s) => {
+    for (const k of ['sector', 'sector_id', 'sectorId', 'sector_code', 'sectorCode', 'sectorName', 'sector_name', 'industry', 'category']) {
+      if (s[k] != null && s[k] !== '') return s[k];
+    }
+    for (const k of Object.keys(s)) {
+      if (/sector|industry/i.test(k) && s[k] != null && s[k] !== '') return s[k];
+    }
+    return null;
+  };
   return arr
     .filter((s) => s && s.symbol && !s.is_delisted && !s.is_merged)
-    .map((s) => ({ symbol: String(s.symbol).toUpperCase(), name: s.name || s.symbol, sector: s.sector ?? s.sector_id ?? s.sectorId ?? s.sector_code ?? s.sectorCode ?? null }))
+    .map((s) => ({ symbol: String(s.symbol).toUpperCase(), name: s.name || s.symbol, sector: sectorOf(s) }))
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
 
@@ -85,6 +95,43 @@ export async function fetchCandles(symbol, cookie) {
 
   // Re-index for the chart.
   return rows.map((r, i) => ({ i, ...r }));
+}
+
+// Cache-first candle reader: returns stored candles without touching the network.
+// Only fetches live the FIRST time a symbol is seen (then caches it). The daily
+// Sync is what refreshes everything — normal reads never call Chukul again.
+export async function getCandles(symbol, cookie, { allowLive = true } = {}) {
+  const hit = await cacheGetCandles(symbol);
+  if (hit && hit.c && hit.c.length) return hit.c;
+  if (!allowLive) return [];
+  const c = await fetchCandles(symbol, cookie);
+  if (c && c.length) await cacheSetCandles(symbol, c);
+  return c;
+}
+
+// Daily sync: force-fetch fresh candles for a SCOPED list of symbols and store them.
+// Deliberately gentle — low concurrency + a small random delay between requests —
+// so it reads like a person browsing, not a scraper hammering every symbol at once.
+export async function syncAll(symbols, cookie, onProgress) {
+  let done = 0, ok = 0, idx = 0;
+  const CONC = 2;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const uniq = Array.from(new Set(['NEPSE', ...symbols.map((s) => String(s).toUpperCase())]));
+  async function worker() {
+    while (idx < uniq.length) {
+      const sym = uniq[idx++];
+      try {
+        const c = await fetchCandles(sym, cookie);
+        if (c && c.length) { await cacheSetCandles(sym, c); ok++; }
+      } catch (e) { /* skip */ }
+      done++;
+      if (onProgress) onProgress(done, uniq.length);
+      await sleep(200 + Math.random() * 350); // jittered pause between requests
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONC, uniq.length) }, worker));
+  await setSyncMeta({ at: Date.now(), count: ok, total: uniq.length });
+  return { synced: ok, total: uniq.length };
 }
 
 // Unified loader — drives Picks/Watch/index from real Chukul candle analysis.
@@ -123,47 +170,62 @@ export async function screenSectors(sectors, onProgress) {
   // Keep keyword fallbacks in case a payload ever uses text labels instead.
   const GROUPS = {
     hydro: { codes: ['5'], kw: ['hydro'] },
-    micro: { codes: ['9'], kw: ['micro', 'laghubitta'] },
+    micro: { codes: ['9'], kw: ['laghubitta'] },
+    devbank: { codes: ['2'], kw: ['development bank'] },
+    finance: { codes: ['3'], kw: [] },
     life: { codes: ['7'], kw: ['life insurance'] },
+    nonlife: { codes: ['10'], kw: ['non life', 'non-life'] },
     manuf: { codes: ['8'], kw: ['manufactur', 'processing'] },
-    nonlife: { codes: ['11'], kw: ['non life', 'non-life'] },
+    other: { codes: ['11'], kw: [] },
   };
   const wanted = sectors.map((s) => GROUPS[String(s).toLowerCase()]).filter(Boolean);
   const codeSet = new Set(wanted.flatMap((g) => g.codes));
   const kws = wanted.flatMap((g) => g.kw);
   const matchSector = (sec) => {
     if (sec == null) return false;
-    if (codeSet.has(String(sec).trim())) return true;
-    const str = String(sec).toLowerCase();
+    if (typeof sec === 'object') {
+      const id = sec.id ?? sec.code ?? sec.sector_id ?? sec.pk ?? sec.value;
+      if (id != null && codeSet.has(String(id).trim())) return true;
+      const nm = String(sec.name ?? sec.title ?? sec.label ?? '').toLowerCase();
+      return kws.some((k) => nm.includes(k));
+    }
+    const str = String(sec).trim().toLowerCase();
+    if (codeSet.has(str)) return true;
     return kws.some((k) => str.includes(k));
   };
+  const seenVal = (x) => (x == null ? null : typeof x === 'object' ? JSON.stringify(x) : String(x));
   const universe = list.filter((s) => matchSector(s.sector));
   if (!universe.length) {
-    const seen = Array.from(new Set(list.map((s) => s.sector).filter((x) => x != null))).slice(0, 20);
-    return { error: `No stocks matched sector codes ${[...codeSet].join(', ') || '(none)'}. Sector values seen: ${seen.join(', ') || '(sector field missing)'}`, results: [], total: 0, sectorsSeen: seen };
+    const seen = Array.from(new Set(list.map((s) => seenVal(s.sector)).filter(Boolean))).slice(0, 20);
+    return { error: `No stocks matched ${[...codeSet].join('/') || '(none)'}. Sector values present: ${seen.join('  |  ') || '(sector field missing)'}`, results: [], total: 0, sectorsSeen: seen };
   }
   if (onProgress) onProgress(0, universe.length); // show the total right away
 
   let benchmark = null;
-  try { const ic = await fetchCandles('NEPSE', cookie); if (ic.length >= 60) benchmark = ic; } catch (e) { /* RS optional */ }
+  try { const ic = await getCandles('NEPSE', cookie); if (ic.length >= 60) benchmark = ic; } catch (e) { /* RS optional */ }
 
   const results = [];
   let done = 0;
   const total = universe.length;
-  const CONC = 4;
+  const CONC = 3;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let idx = 0;
   async function worker() {
     while (idx < universe.length) {
       const mine = universe[idx++];
+      let fromCache = true;
       try {
-        const candles = await fetchCandles(mine.symbol, cookie);
-        if (candles.length >= 40) {
+        const cached = await cacheGetCandles(mine.symbol);
+        let candles = cached && cached.c && cached.c.length ? cached.c : null;
+        if (!candles) { fromCache = false; candles = await getCandles(mine.symbol, cookie); }
+        if (candles && candles.length >= 40) {
           const a = analyze(candles, { benchmark });
           if (a) results.push({ symbol: mine.symbol, name: mine.name, sector: mine.sector, a, score: screenScore(a) });
         }
       } catch (e) { /* skip symbol */ }
       done++;
       if (onProgress) onProgress(done, total);
+      if (!fromCache) await sleep(200 + Math.random() * 300); // only pause when we actually hit the network
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONC, universe.length) }, worker));
@@ -192,13 +254,13 @@ export async function loadAnalysis() {
 
   // Fetch NEPSE index candles ONCE up front so each stock gets relative-strength vs index.
   let indexCandles = [];
-  try { indexCandles = await fetchCandles('NEPSE', cookie); } catch (e) { /* RS will be null */ }
+  try { indexCandles = await getCandles('NEPSE', cookie); } catch (e) { /* RS will be null */ }
   const benchmark = indexCandles.length >= 60 ? indexCandles : null;
 
   const stocks = [];
   for (const w of watchlist) {
     try {
-      const candles = await fetchCandles(w.symbol, cookie);
+      const candles = await getCandles(w.symbol, cookie);
       const a = analyze(candles, { benchmark });
       if (a) {
         stocks.push({

@@ -6,7 +6,7 @@ import {
 import Svg, { Rect, Line, Path, G, Text as SvgText } from 'react-native-svg';
 import { C } from './theme';
 import { analyze } from './analysis';
-import { getCookie, setCookie, fetchStockList, fetchCandles } from './chukul';
+import { getCookie, setCookie, fetchStockList, fetchCandles, getCandles } from './chukul';
 import { getWatchlist } from './data';
 import { loadJournal, saveJournal, recordInto, evaluateInto } from './journal';
 
@@ -212,7 +212,7 @@ export default function ChartScreen({ initialSymbol = null }) {
   // Load NEPSE index once for relative-strength benchmarking.
   useEffect(() => {
     if (!cookie) return;
-    fetchCandles('NEPSE', cookie).then((c) => { if (c && c.length >= 60) setBench(c); }).catch(() => {});
+    getCandles('NEPSE', cookie).then((c) => { if (c && c.length >= 60) setBench(c); }).catch(() => {});
   }, [cookie]);
 
   const loadList = useCallback(async (ck) => {
@@ -233,7 +233,7 @@ export default function ChartScreen({ initialSymbol = null }) {
     setSel(symbol); setQuery(''); Keyboard.dismiss();
     setLoading(true); setErr(''); setData(null);
     try {
-      const candles = await fetchCandles(symbol, cookie);
+      const candles = await getCandles(symbol, cookie);
       if (candles.length < 20) throw new Error('Not enough candle history returned for analysis.');
       setData(candles);
       // Journal: log this searched stock's signal and score any open entries for it.
@@ -265,7 +265,7 @@ export default function ChartScreen({ initialSymbol = null }) {
       const out = [];
       for (const w of wl) {
         try {
-          const candles = await fetchCandles(w.symbol, cookie);
+          const candles = await getCandles(w.symbol, cookie);
           if (candles.length >= 20) {
             const a = analyze(candles, { benchmark: bench });
             if (a) out.push({ symbol: w.symbol, a });

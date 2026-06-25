@@ -1,0 +1,17 @@
+NEPSE Analyzer
+Copyright © 2026 Bibek Jha. All rights reserved.
+
+This software and its source code are the personal work of Bibek Jha and are
+provided for personal research use only. No part may be copied, redistributed,
+published, or used commercially without the author's written permission.
+
+NOT INVESTMENT ADVICE. The app produces descriptive technical analysis only.
+It is not a recommendation to buy or sell any security. Verify everything
+against official NEPSE sources before making any decision.
+
+DATA. Market data is accessed from third-party providers using the user's own
+session for personal use. That data remains the property of its providers and
+is not redistributed by this software. No ownership over any market data is
+claimed.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
